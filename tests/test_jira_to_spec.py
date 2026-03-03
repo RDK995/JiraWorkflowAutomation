@@ -67,6 +67,14 @@ Z
             value = jira_to_spec.require_env_any(["JIRA_BASE", "JIRA_BASE_URL"])
         self.assertEqual(value, "https://alias.atlassian.net")
 
+    def test_normalize_repo_slug_allows_dotted_name_https(self):
+        slug = jira_to_spec.normalize_repo_slug("https://github.com/org/repo.name.git")
+        self.assertEqual(slug, "org/repo.name")
+
+    def test_normalize_repo_slug_allows_dotted_name_ssh(self):
+        slug = jira_to_spec.normalize_repo_slug("git@github.com:org/repo.name.git")
+        self.assertEqual(slug, "org/repo.name")
+
 
 if __name__ == "__main__":
     unittest.main()

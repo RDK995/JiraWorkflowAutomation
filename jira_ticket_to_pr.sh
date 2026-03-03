@@ -47,13 +47,25 @@ resolve_target_repo() {
     return 0
   fi
 
-  if [[ "${input}" =~ ^https://github\.com/([^/]+/[^/.]+)(\.git)?$ ]]; then
+  if [[ "${input}" =~ ^https://github\.com/([^/]+/[^/]+)\.git$ ]]; then
     TARGET_REPO_SLUG="${BASH_REMATCH[1]}"
     TARGET_REPO_CLONE_URL="${input}"
     return 0
   fi
 
-  if [[ "${input}" =~ ^git@github\.com:([^/]+/[^/.]+)(\.git)?$ ]]; then
+  if [[ "${input}" =~ ^https://github\.com/([^/]+/[^/]+)$ ]]; then
+    TARGET_REPO_SLUG="${BASH_REMATCH[1]}"
+    TARGET_REPO_CLONE_URL="${input}"
+    return 0
+  fi
+
+  if [[ "${input}" =~ ^git@github\.com:([^/]+/[^/]+)\.git$ ]]; then
+    TARGET_REPO_SLUG="${BASH_REMATCH[1]}"
+    TARGET_REPO_CLONE_URL="${input}"
+    return 0
+  fi
+
+  if [[ "${input}" =~ ^git@github\.com:([^/]+/[^/]+)$ ]]; then
     TARGET_REPO_SLUG="${BASH_REMATCH[1]}"
     TARGET_REPO_CLONE_URL="${input}"
     return 0

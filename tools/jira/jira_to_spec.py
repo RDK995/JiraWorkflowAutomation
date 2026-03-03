@@ -106,11 +106,19 @@ def normalize_repo_slug(raw: str) -> str:
     if not value:
         return ""
 
-    https_match = re.match(r"^https://github\.com/([^/]+/[^/.]+)(?:\.git)?/?$", value, re.IGNORECASE)
+    https_match = re.match(r"^https://github\.com/([^/]+/[^/]+)\.git/?$", value, re.IGNORECASE)
     if https_match:
         return https_match.group(1)
 
-    ssh_match = re.match(r"^git@github\.com:([^/]+/[^/.]+)(?:\.git)?$", value, re.IGNORECASE)
+    https_match = re.match(r"^https://github\.com/([^/]+/[^/]+)/?$", value, re.IGNORECASE)
+    if https_match:
+        return https_match.group(1)
+
+    ssh_match = re.match(r"^git@github\.com:([^/]+/[^/]+)\.git$", value, re.IGNORECASE)
+    if ssh_match:
+        return ssh_match.group(1)
+
+    ssh_match = re.match(r"^git@github\.com:([^/]+/[^/]+)$", value, re.IGNORECASE)
     if ssh_match:
         return ssh_match.group(1)
 
