@@ -1,71 +1,139 @@
 # Jira Workflow Automation
 
-This project runs a webhook service that listens for Jira issue transitions and triggers Codex when an issue moves from **Ready** to **In Progress**.
+Dockerized webhook service that triggers Codex when a Jira issue transitions from **To Do** to **In Progress**.
 
-## What it does
+## Run with Docker
 
-1. Receives a Jira webhook payload.
-2. Verifies the transition is `Ready -> In Progress`.
-3. Fetches the full issue details from Jira API.
-4. Sends an assignment prompt to Codex through the OpenAI Responses API.
-5. Posts Codex output back to the Jira ticket as a comment.
-
-## Setup
-
-### 1) Install dependencies
-
-```bash
-npm install
-```
-
-### 2) Configure environment
+### 1) Configure env
 
 ```bash
 cp .env.example .env
 ```
 
-Populate `.env`:
+Set at minimum:
 
-- `JIRA_BASE_URL`: `https://<your-site>.atlassian.net`
-- `JIRA_USER_EMAIL`: Jira account email.
-- `JIRA_API_TOKEN`: Jira API token (Atlassian account security settings).
-- `JIRA_WEBHOOK_SECRET`: Optional shared secret expected in `x-jira-webhook-secret` header.
-- `READY_STATUS` and `IN_PROGRESS_STATUS`: exact status names in your Jira workflow.
-- `ASSIGNMENT_FIELD_ID`: Optional custom field where assignment details are stored.
-- `CODEX_API_KEY`: API key used for Codex request.
+- `JIRA_BASE_URL=https://<your-site>.atlassian.net`
+- `JIRA_USER_EMAIL=<jira-email>`
+- `JIRA_API_TOKEN=<jira-api-token>`
+- `CODEX_API_KEY=<openai-api-key>` (or pre-authenticated `codex login` in container)
+- `READY_STATUS="To Do"`
+- `IN_PROGRESS_STATUS="In Progress"`
 
-### 3) Run service
+Optional:
+
+- `JIRA_WEBHOOK_SECRET` (recommended for webhook validation)
+- `NGROK_ENABLE=true` (start ngrok in-container)
+- `NGROK_AUTHTOKEN=<your-ngrok-authtoken>`
+- `NGROK_DOMAIN=<your-reserved-domain.ngrok-free.app>` (persistent URL)
+- `NGROK_API_KEY=<your-ngrok-api-key>` (auto-provisions reserved domain if missing)
+- `WORKFLOW_BASE_BRANCH=main` (branch used by `jira_ticket_to_pr.sh`)
+- `WORKFLOW_SCRIPT=./jira_ticket_to_pr.sh`
+- `WORKFLOW_TIMEOUT_SECONDS=5400`
+- `POST_WORKFLOW_RESULT_TO_JIRA=true`
+- `CODEX_EXEC_ARGS=--full-auto` (ensures writable Codex execution in automation)
+
+### 2) Build image
 
 ```bash
-npm run start
+docker build -t jira-workflow-automation .
 ```
 
-Health endpoint:
+### 3) Run container
 
-- `GET /health`
+```bash
+docker run --env-file .env -p 3000:3000 -v codex-state:/data/codex --name jira-automation jira-workflow-automation
+```
 
-Webhook endpoint:
+Persistent Codex login options:
 
-- `POST /webhooks/jira-transition`
+- API key bootstrap (headless): set `CODEX_BOOTSTRAP_LOGIN=true` and `CODEX_API_KEY=...`
+- ChatGPT/device login (one-time, then persisted in volume):
+  - set `CODEX_BOOTSTRAP_LOGIN=true` and `CODEX_DEVICE_LOGIN_ON_START=true`
+  - first run will prompt for device auth
+  - credentials persist in `codex-state` volume and survive container restarts
 
-## Jira webhook configuration
+### 4) Verify service
+
+- Health check: `GET http://localhost:3000/health`
+- Webhook endpoint: `POST http://localhost:3000/webhooks/jira-transition`
+
+If `NGROK_ENABLE=true`, get the public URL from inside container:
+
+```bash
+docker exec jira-automation sh -lc "wget -qO- http://127.0.0.1:4040/api/tunnels"
+```
+
+Use `https://<domain>/webhooks/jira-transition` as your Jira webhook URL.
+
+## Jira webhook setup
 
 In Jira Cloud:
 
-1. Go to **Settings → System → Webhooks**.
-2. Create a webhook targeting:
+1. Go to **Settings -> System -> Webhooks**
+2. Create webhook URL:
    - `https://<your-host>/webhooks/jira-transition`
-3. Select **Issue updated** events.
-4. Add JQL filter if needed (for project-specific automation).
-5. (Optional) Configure an outbound secret and send it as `x-jira-webhook-secret`.
-
-To keep traffic low, use a JQL filter such as:
+3. Event: **Issue updated**
+4. Add JQL filter:
 
 ```text
-project = ENG AND status CHANGED FROM "Ready" TO "In Progress"
+project = KAN AND status CHANGED FROM "To Do" TO "In Progress"
 ```
 
-## Notes
+5. If using `JIRA_WEBHOOK_SECRET`, configure Jira to send header:
+   - `x-jira-webhook-secret: <your-secret>`
 
-- This service does not directly modify code repositories; it sends assignment context to Codex and posts the resulting action plan/output into Jira.
-- If you want automatic git/PR execution, connect this service to your CI runner or coding agent environment that can execute Codex plans.
+## Example Jira ticket (works with this automation)
+
+Example issue key: `KAN-123`
+
+Summary:
+
+```text
+Add validation for webhook secret header
+```
+
+Description:
+
+```text
+GitHub Repo: your-org/your-repo
+
+Context:
+Webhook requests should be rejected if the Jira secret header is missing or invalid.
+
+Acceptance Criteria:
+- Requests with invalid x-jira-webhook-secret return 401
+- Requests with valid secret continue processing
+- Add/adjust tests for secret validation behavior
+```
+
+Transition that triggers automation:
+
+- From: `To Do`
+- To: `In Progress`
+
+When that transition happens, the service enqueues `jira_ticket_to_pr.sh` (Codex CLI workflow) and posts success/failure back to Jira as a comment.
+For automatic push/PR, ensure GitHub CLI auth is configured in container (`GITHUB_TOKEN`/`GH_TOKEN`).
+
+## Target a specific GitHub repo for Codex + PR
+
+Use the runner script to pull a Jira ticket, run Codex, and open a PR against a chosen repository:
+
+```bash
+./jira_ticket_to_pr.sh KAN-123 main
+```
+
+By default, the script reads `## Target Repository` from the Jira-generated spec (sourced from `GitHub Repo: ...` in the Jira ticket).
+
+Supported repo formats:
+
+- `owner/repo`
+- `https://github.com/owner/repo.git`
+- `git@github.com:owner/repo.git`
+
+Notes:
+
+- If no repo override is provided, repo is required in Jira ticket description (`GitHub Repo: owner/repo`).
+- If repo is provided as third argument, it overrides the Jira ticket repo value.
+- Selected repo is cloned under `.codex/repos/` and Codex runs in that repo.
+- The PR is pushed and created against that selected repo.
+- You can also set `TARGET_GITHUB_REPO=owner/repo` and omit the third argument.

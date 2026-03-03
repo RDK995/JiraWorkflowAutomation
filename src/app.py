@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+import base64
+import logging
+import os
+import re
+import subprocess
+import threading
+from pathlib import Path
+from typing import Any
+
+import requests
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+
+load_dotenv()
+
+def env_clean(name: str, default: str = "") -> str:
+    value = os.getenv(name, default)
+    if value is None:
+        return default
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        return cleaned[1:-1]
+    return cleaned
+
+
+PORT = int(env_clean("PORT", "3000"))
+JIRA_BASE_URL = env_clean("JIRA_BASE_URL", "").rstrip("/")
+JIRA_USER_EMAIL = env_clean("JIRA_USER_EMAIL", "")
+JIRA_API_TOKEN = env_clean("JIRA_API_TOKEN", "")
+JIRA_WEBHOOK_SECRET = env_clean("JIRA_WEBHOOK_SECRET", "")
+READY_STATUS = env_clean("READY_STATUS", "To Do")
+IN_PROGRESS_STATUS = env_clean("IN_PROGRESS_STATUS", "In Progress")
+WORKFLOW_SCRIPT = env_clean("WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh")
+WORKFLOW_BASE_BRANCH = env_clean("WORKFLOW_BASE_BRANCH", "main")
+WORKFLOW_TIMEOUT_SECONDS = int(env_clean("WORKFLOW_TIMEOUT_SECONDS", "5400"))
+POST_WORKFLOW_RESULT_TO_JIRA = env_clean("POST_WORKFLOW_RESULT_TO_JIRA", "true").lower() == "true"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+REQUIRED_ENV = ["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN"]
+missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
+if missing:
+    raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
+
+jira_auth_header = "Basic " + base64.b64encode(f"{JIRA_USER_EMAIL}:{JIRA_API_TOKEN}".encode("utf-8")).decode("utf-8")
+
+
+def has_valid_secret(req: Any) -> bool:
+    if not JIRA_WEBHOOK_SECRET:
+        return True
+    return req.headers.get("x-jira-webhook-secret") == JIRA_WEBHOOK_SECRET
+
+
+def add_issue_comment(issue_key: str, comment_body: str) -> None:
+    # Jira Cloud comments use ADF payloads even for plain-text messages.
+    payload = {
+        "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": comment_body}]}],
+        }
+    }
+    response = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/comment",
+        headers={
+            "Authorization": jira_auth_header,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Jira comment creation failed ({response.status_code}): {response.text}")
+
+
+def run_codex_cli_workflow(issue_key: str) -> str:
+    # Webhook path delegates implementation to the existing codex CLI workflow script.
+    script_path = (REPO_ROOT / WORKFLOW_SCRIPT).resolve()
+    if not script_path.exists():
+        raise RuntimeError(f"Workflow script not found: {script_path}")
+
+    command = [str(script_path), issue_key, WORKFLOW_BASE_BRANCH]
+    app.logger.info("Executing workflow script: %s", " ".join(command))
+    proc = subprocess.run(
+        command,
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=WORKFLOW_TIMEOUT_SECONDS,
+    )
+    combined = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    if proc.returncode != 0:
+        tail = "\n".join(combined.strip().splitlines()[-30:])
+        raise RuntimeError(f"Codex CLI workflow failed (exit {proc.returncode}).\n{tail}")
+    return combined.strip()
+
+
+def extract_pr_url(text: str) -> str:
+    match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+", text or "")
+    return match.group(0) if match else ""
+
+
+def run_automation_for_issue(issue_key: str) -> None:
+    try:
+        app.logger.info("Automation started: issue=%s", issue_key)
+        output = run_codex_cli_workflow(issue_key)
+        app.logger.info("Automation completed: issue=%s", issue_key)
+        if POST_WORKFLOW_RESULT_TO_JIRA:
+            pr_url = extract_pr_url(output)
+            if pr_url:
+                add_issue_comment(
+                    issue_key,
+                    "Codex CLI automation completed successfully.\n\n"
+                    f"Pull Request: {pr_url}\n"
+                    f"Base branch: {WORKFLOW_BASE_BRANCH}",
+                )
+            else:
+                excerpt = "\n".join(output.splitlines()[-20:])[:2800]
+                add_issue_comment(
+                    issue_key,
+                    "Codex CLI automation completed successfully.\n\n"
+                    f"Base branch: {WORKFLOW_BASE_BRANCH}\n"
+                    f"Workflow output (tail):\n{excerpt}",
+                )
+    except Exception as exc:
+        app.logger.exception("Automation error: issue=%s", issue_key)
+        if POST_WORKFLOW_RESULT_TO_JIRA:
+            error_text = str(exc)
+            if len(error_text) > 2800:
+                error_text = error_text[:2800]
+            add_issue_comment(issue_key, f"Codex CLI automation failed.\n\nError:\n{error_text}")
+
+
+def enqueue_automation(issue_key: str) -> None:
+    thread = threading.Thread(target=run_automation_for_issue, args=(issue_key,), daemon=True)
+    thread.start()
+
+
+def was_transitioned_to_in_progress(webhook_event: dict[str, Any]) -> bool:
+    # We only trigger automation on the explicit Ready -> In Progress transition.
+    items = webhook_event.get("changelog", {}).get("items", [])
+    status_item = next((item for item in items if item.get("field") == "status"), None)
+    if not status_item:
+        return False
+    return status_item.get("fromString") == READY_STATUS and status_item.get("toString") == IN_PROGRESS_STATUS
+
+
+@app.get("/health")
+def health() -> Any:
+    return jsonify({"status": "ok"}), 200
+
+
+@app.post("/webhooks/jira-transition")
+def jira_transition() -> Any:
+    body = request.get_json(silent=True) or {}
+    issue_key = body.get("issue", {}).get("key")
+    status_item = next((item for item in body.get("changelog", {}).get("items", []) if item.get("field") == "status"), {})
+    from_status = status_item.get("fromString")
+    to_status = status_item.get("toString")
+    app.logger.info(
+        "Webhook received: issue=%s from=%s to=%s secret_header_present=%s",
+        issue_key,
+        from_status,
+        to_status,
+        "x-jira-webhook-secret" in request.headers,
+    )
+
+    if not has_valid_secret(request):
+        app.logger.warning("Webhook rejected: invalid secret (issue=%s)", issue_key)
+        return jsonify({"error": "Invalid webhook secret"}), 401
+
+    if not was_transitioned_to_in_progress(body):
+        app.logger.info(
+            "Webhook skipped: transition mismatch issue=%s expected=%s->%s got=%s->%s",
+            issue_key,
+            READY_STATUS,
+            IN_PROGRESS_STATUS,
+            from_status,
+            to_status,
+        )
+        return (
+            jsonify(
+                {
+                    "skipped": True,
+                    "reason": f"Status transition did not match {READY_STATUS} -> {IN_PROGRESS_STATUS}",
+                }
+            ),
+            200,
+        )
+
+    if not issue_key:
+        app.logger.warning("Webhook rejected: missing issue key")
+        return jsonify({"error": "Missing issue key in webhook payload"}), 400
+
+    try:
+        enqueue_automation(issue_key)
+        return jsonify({"queued": True, "issueKey": issue_key}), 202
+    except Exception as exc:
+        app.logger.exception("Automation error: issue=%s", issue_key)
+        return jsonify({"error": str(exc)}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT)
