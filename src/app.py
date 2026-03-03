@@ -31,6 +31,7 @@ JIRA_API_TOKEN = env_clean("JIRA_API_TOKEN", "")
 JIRA_WEBHOOK_SECRET = env_clean("JIRA_WEBHOOK_SECRET", "")
 READY_STATUS = env_clean("READY_STATUS", "To Do")
 IN_PROGRESS_STATUS = env_clean("IN_PROGRESS_STATUS", "In Progress")
+IN_REVIEW_STATUS = env_clean("IN_REVIEW_STATUS", "In Review")
 WORKFLOW_SCRIPT = env_clean("WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh")
 WORKFLOW_BASE_BRANCH = env_clean("WORKFLOW_BASE_BRANCH", "main")
 WORKFLOW_TIMEOUT_SECONDS = int(env_clean("WORKFLOW_TIMEOUT_SECONDS", "5400"))
@@ -77,6 +78,45 @@ def add_issue_comment(issue_key: str, comment_body: str) -> None:
         raise RuntimeError(f"Jira comment creation failed ({response.status_code}): {response.text}")
 
 
+def transition_issue_to_status(issue_key: str, target_status: str) -> None:
+    transitions_resp = requests.get(
+        f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
+        headers={
+            "Authorization": jira_auth_header,
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+    if not transitions_resp.ok:
+        raise RuntimeError(
+            f"Jira transitions fetch failed ({transitions_resp.status_code}): {transitions_resp.text}"
+        )
+
+    transitions = (transitions_resp.json() or {}).get("transitions", [])
+    target = next((t for t in transitions if (t.get("to") or {}).get("name") == target_status), None)
+    if not target:
+        available = ", ".join(sorted({((t.get("to") or {}).get("name") or "UNKNOWN") for t in transitions}))
+        raise RuntimeError(
+            f"Transition to '{target_status}' not available for {issue_key}. Available: {available or 'none'}"
+        )
+
+    transition_id = target.get("id")
+    apply_resp = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
+        headers={
+            "Authorization": jira_auth_header,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        json={"transition": {"id": transition_id}},
+        timeout=30,
+    )
+    if not apply_resp.ok:
+        raise RuntimeError(
+            f"Jira transition apply failed ({apply_resp.status_code}): {apply_resp.text}"
+        )
+
+
 def run_codex_cli_workflow(issue_key: str) -> str:
     # Webhook path delegates implementation to the existing codex CLI workflow script.
     script_path = (REPO_ROOT / WORKFLOW_SCRIPT).resolve()
@@ -119,6 +159,8 @@ def run_automation_for_issue(issue_key: str) -> None:
                     f"Pull Request: {pr_url}\n"
                     f"Base branch: {WORKFLOW_BASE_BRANCH}",
                 )
+                transition_issue_to_status(issue_key, IN_REVIEW_STATUS)
+                app.logger.info("Issue transitioned: issue=%s target_status=%s", issue_key, IN_REVIEW_STATUS)
             else:
                 excerpt = "\n".join(output.splitlines()[-20:])[:2800]
                 add_issue_comment(

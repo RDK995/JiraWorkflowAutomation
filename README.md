@@ -68,6 +68,7 @@ Set these required values in `.env`:
 - `JIRA_API_TOKEN=<jira-api-token>`
 - `READY_STATUS="To Do"`
 - `IN_PROGRESS_STATUS="In Progress"`
+- `IN_REVIEW_STATUS="In Review"`
 - `GITHUB_TOKEN=<github-pat>` (recommended; `GH_TOKEN` also supported)
 - `REQUIRE_GITHUB_AUTH=true`
 - `CODEX_EXEC_ARGS=--full-auto`
@@ -210,6 +211,7 @@ Example ticket:
   - Codex run
   - push + PR creation
   - Jira comment posted with PR URL or error
+  - issue automatically transitioned to `In Review` when PR is created
 
 ## Troubleshooting
 
