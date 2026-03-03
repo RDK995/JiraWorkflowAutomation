@@ -1,7 +1,7 @@
 import importlib
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 def load_app_module():
@@ -44,6 +44,47 @@ class AppLogicTests(unittest.TestCase):
         with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./does-not-exist.sh"):
             with self.assertRaises(RuntimeError):
                 self.app_module.run_codex_cli_workflow("KAN-123")
+
+    def test_transition_issue_to_status_success(self):
+        get_resp = Mock()
+        get_resp.ok = True
+        get_resp.json.return_value = {
+            "transitions": [
+                {"id": "31", "to": {"name": "In Review"}},
+                {"id": "41", "to": {"name": "Done"}},
+            ]
+        }
+
+        post_resp = Mock()
+        post_resp.ok = True
+
+        with patch("src.app.requests.get", return_value=get_resp) as mock_get, patch(
+            "src.app.requests.post", return_value=post_resp
+        ) as mock_post:
+            self.app_module.transition_issue_to_status("KAN-123", "In Review")
+
+        self.assertTrue(mock_get.called)
+        self.assertTrue(mock_post.called)
+
+    def test_transition_issue_to_status_missing_target(self):
+        get_resp = Mock()
+        get_resp.ok = True
+        get_resp.json.return_value = {"transitions": [{"id": "41", "to": {"name": "Done"}}]}
+
+        with patch("src.app.requests.get", return_value=get_resp):
+            with self.assertRaises(RuntimeError):
+                self.app_module.transition_issue_to_status("KAN-123", "In Review")
+
+    def test_run_automation_transitions_when_pr_present(self):
+        with patch.object(
+            self.app_module, "run_codex_cli_workflow", return_value="https://github.com/org/repo/pull/12"
+        ), patch.object(self.app_module, "add_issue_comment") as comment_mock, patch.object(
+            self.app_module, "transition_issue_to_status"
+        ) as transition_mock:
+            self.app_module.run_automation_for_issue("KAN-123")
+
+        self.assertTrue(comment_mock.called)
+        transition_mock.assert_called_once_with("KAN-123", self.app_module.IN_REVIEW_STATUS)
 
 
 class AppRouteTests(unittest.TestCase):
