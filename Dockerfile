@@ -12,9 +12,8 @@ COPY src ./src
 COPY tools ./tools
 COPY scripts ./scripts
 COPY jira_ticket_to_pr.sh ./jira_ticket_to_pr.sh
-COPY run.sh ./run.sh
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
-RUN chmod +x ./docker/entrypoint.sh ./jira_ticket_to_pr.sh ./run.sh
+RUN chmod +x ./docker/entrypoint.sh ./jira_ticket_to_pr.sh
 
 ENV PORT=3000 \
     JIRA_BASE_URL= \
