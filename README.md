@@ -11,7 +11,7 @@ Webhook service (Dockerized) that listens for Jira status transitions and runs a
 
 ## Visualizations
 
-- Full diagrams: [docs/architecture.md](/Users/ryankenny/Projects/JiraWorkflowAutomation/docs/architecture.md)
+- Full diagrams: [docs/architecture.md](docs/architecture.md)
 
 ### Workflow Diagram
 
@@ -72,6 +72,25 @@ Set these required values in `.env`:
 - `REQUIRE_GITHUB_AUTH=true`
 - `CODEX_EXEC_ARGS=--full-auto`
 
+External key setup:
+
+- Jira API token:
+  - Create at Atlassian account security: `https://id.atlassian.com/manage-profile/security/api-tokens`
+  - Put Jira site URL/email/token into:
+    - `JIRA_BASE_URL`
+    - `JIRA_USER_EMAIL`
+    - `JIRA_API_TOKEN`
+- GitHub token (for push + PR):
+  - Create PAT at GitHub settings: `https://github.com/settings/tokens`
+  - Recommended fine-grained token permissions:
+    - Repository `Contents: Read and write`
+    - Repository `Pull requests: Read and write`
+    - Repository `Metadata: Read`
+  - Set in `.env`: `GITHUB_TOKEN=<token>` (or `GH_TOKEN`)
+- OpenAI/Codex access:
+  - API key mode: set `CODEX_API_KEY` (or `OPENAI_API_KEY`) and `CODEX_BOOTSTRAP_LOGIN=true`
+  - Device login mode: keep API key empty and use persisted login (see below)
+
 Codex auth options (pick one):
 
 - API key mode:
@@ -84,7 +103,7 @@ Codex auth options (pick one):
 
 Optional but recommended:
 
-- `JIRA_WEBHOOK_SECRET=<shared-secret>` (if your Jira webhook sends a secret header)
+- `JIRA_WEBHOOK_SECRET=<shared-secret>` (leave empty unless Jira webhook secret is configured)
 - `NGROK_ENABLE=true`
 - `NGROK_AUTHTOKEN=<ngrok-authtoken>`
 - `NGROK_DOMAIN=<reserved-domain.ngrok-free.dev>`
@@ -142,6 +161,22 @@ project = KAN AND status CHANGED FROM "To Do" TO "In Progress"
 6. If using a secret:
   - Set the same value in Jira webhook secret and `.env` (`JIRA_WEBHOOK_SECRET`).
   - If no secret is set in Jira, keep `JIRA_WEBHOOK_SECRET=` empty.
+
+## 4.1) Verify external credentials before first transition
+
+Run these checks before moving a Jira ticket:
+
+```bash
+docker exec -it jira-automation sh -lc "gh auth status -h github.com"
+docker exec -it jira-automation sh -lc "codex --version"
+docker exec -it jira-automation sh -lc "python3 scripts/test_integrations.py"
+```
+
+Expected:
+
+- GitHub auth shows logged-in status.
+- Codex CLI is installed and login status passes.
+- Jira integration check passes with your Jira account details.
 
 ## 5) Jira ticket template required for automation
 
