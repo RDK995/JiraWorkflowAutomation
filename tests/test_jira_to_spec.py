@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from tools.jira import jira_to_spec
 
@@ -55,6 +56,16 @@ Z
         text = jira_to_spec.flatten_adf(adf)
         self.assertIn("- A", text)
         self.assertIn("- B", text)
+
+    def test_require_env_any_prefers_first_present(self):
+        with patch.dict("os.environ", {"JIRA_BASE_URL": "https://example.atlassian.net"}, clear=True):
+            value = jira_to_spec.require_env_any(["JIRA_BASE", "JIRA_BASE_URL"])
+        self.assertEqual(value, "https://example.atlassian.net")
+
+    def test_require_env_any_uses_alias_when_present(self):
+        with patch.dict("os.environ", {"JIRA_BASE": "https://alias.atlassian.net"}, clear=True):
+            value = jira_to_spec.require_env_any(["JIRA_BASE", "JIRA_BASE_URL"])
+        self.assertEqual(value, "https://alias.atlassian.net")
 
 
 if __name__ == "__main__":

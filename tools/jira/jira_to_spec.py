@@ -16,6 +16,15 @@ def require_env(name: str) -> str:
     return value
 
 
+def require_env_any(names: list[str]) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    print(f"Missing required env var: one of {', '.join(names)}", file=sys.stderr)
+    sys.exit(1)
+
+
 def flatten_adf(node) -> str:
     # Best-effort ADF flattening so specs remain readable in markdown output.
     if node is None:
@@ -174,9 +183,9 @@ def main() -> None:
         sys.exit(1)
 
     issue_key = sys.argv[1].strip()
-    jira_base = require_env("JIRA_BASE")
-    jira_email = require_env("JIRA_EMAIL")
-    jira_token = require_env("JIRA_TOKEN")
+    jira_base = require_env_any(["JIRA_BASE", "JIRA_BASE_URL"])
+    jira_email = require_env_any(["JIRA_EMAIL", "JIRA_USER_EMAIL"])
+    jira_token = require_env_any(["JIRA_TOKEN", "JIRA_API_TOKEN"])
 
     issue = get_issue(jira_base, jira_email, jira_token, issue_key)
     fields = issue.get("fields", {})
