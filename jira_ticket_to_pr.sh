@@ -143,24 +143,59 @@ EOF
 (cd "${TARGET_DIR}" && codex exec ${CODEX_EXEC_ARGS} "${CODEX_PROMPT}")
 
 echo "Pushing branch to origin"
-git -C "${TARGET_DIR}" push -u origin "${BRANCH_NAME}"
+if ! git -C "${TARGET_DIR}" push -u origin "${BRANCH_NAME}"; then
+  echo "Push failed (likely non-fast-forward). Retrying with --force-with-lease for ${BRANCH_NAME}."
+  git -C "${TARGET_DIR}" fetch origin "${BRANCH_NAME}" || true
+  git -C "${TARGET_DIR}" push --force-with-lease -u origin "${BRANCH_NAME}"
+fi
 
 ISSUE_SUMMARY_LINE="$(head -n 1 "${TARGET_DIR}/${SPEC_FILE}")"
 PR_SUMMARY="${ISSUE_SUMMARY_LINE#\# ${JIRA_KEY}: }"
 PR_TITLE="${JIRA_KEY}: ${PR_SUMMARY}"
 
 echo "Creating PR against ${BASE_BRANCH}"
+PR_CREATE_OUTPUT=""
 if [[ -n "${TARGET_REPO_SLUG}" ]]; then
-  (cd "${TARGET_DIR}" && gh pr create \
+  if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
     --repo "${TARGET_REPO_SLUG}" \
     --title "${PR_TITLE}" \
     --body-file "${SPEC_FILE}" \
-    --base "${BASE_BRANCH}")
+    --base "${BASE_BRANCH}" 2>&1)"; then
+    if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
+      echo "PR already exists for ${BRANCH_NAME}. Reusing existing PR."
+      EXISTING_PR_URL="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" --repo "${TARGET_REPO_SLUG}" --json url --jq .url 2>/dev/null || true)"
+      if [[ -z "${EXISTING_PR_URL}" ]]; then
+        echo "${PR_CREATE_OUTPUT}" >&2
+        exit 1
+      fi
+      echo "${EXISTING_PR_URL}"
+    else
+      echo "${PR_CREATE_OUTPUT}" >&2
+      exit 1
+    fi
+  else
+    echo "${PR_CREATE_OUTPUT}"
+  fi
 else
-  (cd "${TARGET_DIR}" && gh pr create \
+  if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
     --title "${PR_TITLE}" \
     --body-file "${SPEC_FILE}" \
-    --base "${BASE_BRANCH}")
+    --base "${BASE_BRANCH}" 2>&1)"; then
+    if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
+      echo "PR already exists for ${BRANCH_NAME}. Reusing existing PR."
+      EXISTING_PR_URL="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" --json url --jq .url 2>/dev/null || true)"
+      if [[ -z "${EXISTING_PR_URL}" ]]; then
+        echo "${PR_CREATE_OUTPUT}" >&2
+        exit 1
+      fi
+      echo "${EXISTING_PR_URL}"
+    else
+      echo "${PR_CREATE_OUTPUT}" >&2
+      exit 1
+    fi
+  else
+    echo "${PR_CREATE_OUTPUT}"
+  fi
 fi
 
 echo "Done."

@@ -86,6 +86,17 @@ class AppLogicTests(unittest.TestCase):
         self.assertTrue(comment_mock.called)
         transition_mock.assert_called_once_with("KAN-123", self.app_module.IN_REVIEW_STATUS)
 
+    def test_run_automation_transitions_when_comments_disabled(self):
+        with patch.object(
+            self.app_module, "run_codex_cli_workflow", return_value="https://github.com/org/repo/pull/12"
+        ), patch.object(self.app_module, "POST_WORKFLOW_RESULT_TO_JIRA", False), patch.object(
+            self.app_module, "add_issue_comment"
+        ) as comment_mock, patch.object(self.app_module, "transition_issue_to_status") as transition_mock:
+            self.app_module.run_automation_for_issue("KAN-123")
+
+        comment_mock.assert_not_called()
+        transition_mock.assert_called_once_with("KAN-123", self.app_module.IN_REVIEW_STATUS)
+
 
 class AppRouteTests(unittest.TestCase):
     @classmethod

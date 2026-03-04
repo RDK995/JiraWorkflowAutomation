@@ -150,8 +150,12 @@ def run_automation_for_issue(issue_key: str) -> None:
         app.logger.info("Automation started: issue=%s", issue_key)
         output = run_codex_cli_workflow(issue_key)
         app.logger.info("Automation completed: issue=%s", issue_key)
+        pr_url = extract_pr_url(output)
+        if pr_url:
+            transition_issue_to_status(issue_key, IN_REVIEW_STATUS)
+            app.logger.info("Issue transitioned: issue=%s target_status=%s", issue_key, IN_REVIEW_STATUS)
+
         if POST_WORKFLOW_RESULT_TO_JIRA:
-            pr_url = extract_pr_url(output)
             if pr_url:
                 add_issue_comment(
                     issue_key,
@@ -159,8 +163,6 @@ def run_automation_for_issue(issue_key: str) -> None:
                     f"Pull Request: {pr_url}\n"
                     f"Base branch: {WORKFLOW_BASE_BRANCH}",
                 )
-                transition_issue_to_status(issue_key, IN_REVIEW_STATUS)
-                app.logger.info("Issue transitioned: issue=%s target_status=%s", issue_key, IN_REVIEW_STATUS)
             else:
                 excerpt = "\n".join(output.splitlines()[-20:])[:2800]
                 add_issue_comment(
