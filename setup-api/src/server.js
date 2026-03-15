@@ -201,6 +201,11 @@ export function createRequestListener(deps = {}) {
         return;
       }
 
+      if (url.pathname.startsWith("/api/")) {
+        sendJson(response, 404, { error: "Not found" });
+        return;
+      }
+
       if (await serveStaticAssetImpl(url.pathname, response)) {
         return;
       }

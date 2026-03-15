@@ -253,3 +253,16 @@ test("GET unknown route falls back to 404 when no static asset exists", async ()
 
   assert.equal(response.statusCode, 404);
 });
+
+test("GET unknown api route returns JSON 404 before SPA fallback", async () => {
+  const response = await invokeRoute({
+    url: "/api/typo",
+    headers: { host: "localhost" },
+    deps: {
+      serveStaticAssetImpl: async (requestPath) => requestPath === "/"
+    }
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(JSON.parse(response.body), { error: "Not found" });
+});
