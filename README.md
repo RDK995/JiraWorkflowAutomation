@@ -55,6 +55,45 @@ flowchart LR
   - `CODEX_API_KEY`/`OPENAI_API_KEY`, or
   - interactive `codex login` persisted in Docker volume
 
+## Setup Assistant (Phase 1)
+
+Phase 1 now includes a React onboarding frontend plus a local setup API so a new user can configure `.env`, build the Docker image, start the container, and inspect logs from a guided UI.
+
+Install workspace dependencies:
+
+```bash
+npm install
+```
+
+Start the local setup API:
+
+```bash
+npm run dev:setup-api
+```
+
+Start the React frontend in a second terminal:
+
+```bash
+npm run dev:frontend
+```
+
+Open the Vite URL shown in the terminal, usually `http://localhost:5173`.
+
+What the setup assistant does:
+
+- Captures Jira, GitHub, Codex, and optional ngrok config
+- Writes `.env` for the project
+- Runs `docker build -t jira-workflow-automation .`
+- Replaces and starts the `jira-automation` container
+- Polls `http://localhost:3000/health`
+- Shows recent container logs in the UI
+
+The setup assistant code lives in:
+
+- `frontend/`
+- `setup-api/`
+- `docs/setup-ui-plan.md`
+
 ## 1) Configure environment
 
 ```bash

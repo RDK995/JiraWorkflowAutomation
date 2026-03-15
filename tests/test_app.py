@@ -29,6 +29,13 @@ class AppLogicTests(unittest.TestCase):
         }
         self.assertTrue(self.app_module.was_transitioned_to_in_progress(payload))
 
+    def test_extract_pr_url(self):
+        text = "Created PR https://github.com/org/repo/pull/45 successfully"
+        self.assertEqual(self.app_module.extract_pr_url(text), "https://github.com/org/repo/pull/45")
+
+    def test_extract_pr_url_returns_empty_string_when_missing(self):
+        self.assertEqual(self.app_module.extract_pr_url("no pr here"), "")
+
     def test_transition_non_match(self):
         payload = {
             "changelog": {
@@ -75,6 +82,16 @@ class AppLogicTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.app_module.transition_issue_to_status("KAN-123", "In Review")
 
+    def test_add_issue_comment_raises_on_failed_request(self):
+        response = Mock()
+        response.ok = False
+        response.status_code = 403
+        response.text = "forbidden"
+
+        with patch("src.app.requests.post", return_value=response):
+            with self.assertRaises(RuntimeError):
+                self.app_module.add_issue_comment("KAN-123", "Hello")
+
     def test_run_automation_transitions_when_pr_present(self):
         with patch.object(
             self.app_module, "run_codex_cli_workflow", return_value="https://github.com/org/repo/pull/12"
@@ -97,6 +114,15 @@ class AppLogicTests(unittest.TestCase):
         comment_mock.assert_not_called()
         transition_mock.assert_called_once_with("KAN-123", self.app_module.IN_REVIEW_STATUS)
 
+    def test_run_automation_comments_error_on_failure(self):
+        with patch.object(
+            self.app_module, "run_codex_cli_workflow", side_effect=RuntimeError("boom")
+        ), patch.object(self.app_module, "add_issue_comment") as comment_mock:
+            self.app_module.run_automation_for_issue("KAN-123")
+
+        self.assertTrue(comment_mock.called)
+        self.assertIn("failed", comment_mock.call_args.args[1].lower())
+
 
 class AppRouteTests(unittest.TestCase):
     @classmethod
@@ -110,6 +136,20 @@ class AppRouteTests(unittest.TestCase):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["status"], "ok")
+
+    def test_webhook_rejects_invalid_secret(self):
+        payload = {
+            "issue": {"key": "KAN-123"},
+            "changelog": {"items": [{"field": "status", "fromString": "To Do", "toString": "In Progress"}]},
+        }
+        with patch.object(self.app_module, "JIRA_WEBHOOK_SECRET", "expected-secret"):
+            response = self.client.post(
+                "/webhooks/jira-transition",
+                json=payload,
+                headers={"x-jira-webhook-secret": "wrong-secret"},
+            )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Invalid webhook secret", response.json["error"])
 
     def test_webhook_skips_non_target_transition(self):
         payload = {"changelog": {"items": [{"field": "status", "fromString": "Backlog", "toString": "Ready"}]}}
@@ -132,6 +172,16 @@ class AppRouteTests(unittest.TestCase):
             response = self.client.post("/webhooks/jira-transition", json=payload)
         self.assertEqual(response.status_code, 202)
         self.assertTrue(response.json["queued"])
+
+    def test_webhook_returns_500_when_enqueue_fails(self):
+        payload = {
+            "issue": {"key": "KAN-123"},
+            "changelog": {"items": [{"field": "status", "fromString": "To Do", "toString": "In Progress"}]},
+        }
+        with patch.object(self.app_module, "enqueue_automation", side_effect=RuntimeError("queue failed")):
+            response = self.client.post("/webhooks/jira-transition", json=payload)
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("queue failed", response.json["error"])
 
 
 if __name__ == "__main__":

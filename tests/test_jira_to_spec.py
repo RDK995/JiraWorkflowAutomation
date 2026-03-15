@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tools.jira import jira_to_spec
 
@@ -74,6 +74,33 @@ Z
     def test_normalize_repo_slug_allows_dotted_name_ssh(self):
         slug = jira_to_spec.normalize_repo_slug("git@github.com:org/repo.name.git")
         self.assertEqual(slug, "org/repo.name")
+
+    def test_extract_target_repository_prefers_structured_field(self):
+        fields = {"GitHub Repo": {"value": "org/from-field"}}
+        slug = jira_to_spec.extract_target_repository(fields, "GitHub Repo: org/from-description")
+        self.assertEqual(slug, "org/from-field")
+
+    def test_extract_target_repository_falls_back_to_description(self):
+        slug = jira_to_spec.extract_target_repository({}, "GitHub Repo: org/from-description")
+        self.assertEqual(slug, "org/from-description")
+
+    def test_extract_target_repository_falls_back_to_github_url(self):
+        slug = jira_to_spec.extract_target_repository({}, "See https://github.com/org/from-url.git for details")
+        self.assertEqual(slug, "org/from-url")
+
+    def test_get_issue_returns_json_payload(self):
+        response = Mock()
+        response.read.return_value = b'{"key":"KAN-123"}'
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=None)
+
+        with patch("urllib.request.urlopen", return_value=response):
+            issue = jira_to_spec.get_issue("https://example.atlassian.net", "user@example.com", "token", "KAN-123")
+
+        self.assertEqual(issue["key"], "KAN-123")
+
+    def test_extract_description_text_handles_none(self):
+        self.assertEqual(jira_to_spec.extract_description_text(None), "")
 
 
 if __name__ == "__main__":

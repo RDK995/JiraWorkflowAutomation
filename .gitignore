@@ -1,3 +1,8 @@
 .env
 __pycache__/
 *.pyc
+node_modules/
+frontend/node_modules/
+setup-api/node_modules/
+frontend/dist/
+setup-api/.tmp/
