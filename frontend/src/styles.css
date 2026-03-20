@@ -897,6 +897,16 @@ a:hover {
   color: var(--text-body);
 }
 
+.pr-link-list {
+  display: grid;
+  gap: 0.45rem;
+  word-break: break-word;
+}
+
+.pr-link-list a {
+  color: var(--accent-soft);
+}
+
 .action-row,
 .footer-nav {
   display: flex;
