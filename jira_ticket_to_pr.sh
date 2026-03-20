@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JIRA_KEY="$1"
 BASE_BRANCH="${2:-main}"
 TARGET_REPO_INPUT="${3:-${TARGET_GITHUB_REPO:-}}"
+AI_AGENT="${AI_AGENT:-codex}"
 SPEC_DIR=".codex"
 SPEC_FILE="${SPEC_DIR}/${JIRA_KEY}.md"
 BRANCH_NAME="jira/${JIRA_KEY}"
@@ -18,6 +19,7 @@ TARGET_DIR="${SCRIPT_DIR}"
 TARGET_REPO_SLUG=""
 TARGET_REPO_CLONE_URL=""
 CODEX_EXEC_ARGS="${CODEX_EXEC_ARGS:---full-auto}"
+CLAUDE_EXEC_ARGS="${CLAUDE_EXEC_ARGS:---allowedTools Bash,Edit,Write,Read}"
 
 extract_repo_from_spec() {
   local spec_path="$1"
@@ -130,9 +132,8 @@ echo "Preparing branch: ${BRANCH_NAME} from origin/${BASE_BRANCH}"
 git -C "${TARGET_DIR}" fetch origin "${BASE_BRANCH}"
 git -C "${TARGET_DIR}" checkout -B "${BRANCH_NAME}" "origin/${BASE_BRANCH}"
 
-echo "Running Codex implementation workflow"
-CODEX_PROMPT=$(cat <<EOF
-Read the Jira spec at ${TARGET_DIR}/${SPEC_FILE}.
+AI_PROMPT=$(cat <<EOF
+Read the Jira spec at ${SPEC_FILE}.
 
 Implement all required changes in this repository for ${JIRA_KEY}.
 Run tests/checks, fix any failures, and ensure the project is in a good state.
@@ -140,7 +141,16 @@ Commit your changes with a commit message that includes "${JIRA_KEY}".
 EOF
 )
 
-(cd "${TARGET_DIR}" && codex exec ${CODEX_EXEC_ARGS} "${CODEX_PROMPT}")
+if [[ "${AI_AGENT}" == "claude" ]]; then
+  echo "Running Claude Code implementation workflow"
+  (cd "${TARGET_DIR}" && claude -p "${AI_PROMPT}" ${CLAUDE_EXEC_ARGS} --output-format text)
+elif [[ "${AI_AGENT}" == "codex" ]]; then
+  echo "Running Codex implementation workflow"
+  (cd "${TARGET_DIR}" && codex exec ${CODEX_EXEC_ARGS} "${AI_PROMPT}")
+else
+  echo "Unknown AI_AGENT: ${AI_AGENT}. Supported values: codex, claude" >&2
+  exit 1
+fi
 
 echo "Pushing branch to origin"
 if ! git -C "${TARGET_DIR}" push -u origin "${BRANCH_NAME}"; then

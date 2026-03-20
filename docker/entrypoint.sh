@@ -52,6 +52,15 @@ elif [[ "${REQUIRE_GITHUB_AUTH:-false}" == "true" ]]; then
   exit 1
 fi
 
+# Claude Code auth validation (API key only — no device login needed)
+if [[ "${AI_AGENT:-codex}" == "claude" ]]; then
+  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "AI_AGENT=claude but ANTHROPIC_API_KEY is not set." >&2
+    exit 1
+  fi
+  echo "Claude Code configured with API key."
+fi
+
 if [[ "${CODEX_BOOTSTRAP_LOGIN:-false}" == "true" ]]; then
   if ! codex login status >/dev/null 2>&1; then
     if [[ -z "${OPENAI_API_KEY:-}" ]]; then

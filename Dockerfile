@@ -6,7 +6,7 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
-    && npm i -g @openai/codex ngrok
+    && npm i -g @openai/codex @anthropic-ai/claude-code ngrok
 
 COPY src ./src
 COPY tools ./tools
@@ -16,6 +16,7 @@ COPY docker/entrypoint.sh ./docker/entrypoint.sh
 RUN chmod +x ./docker/entrypoint.sh ./jira_ticket_to_pr.sh
 
 ENV PORT=3000 \
+    AI_AGENT=codex \
     JIRA_BASE_URL= \
     JIRA_USER_EMAIL= \
     JIRA_API_TOKEN= \
@@ -23,6 +24,7 @@ ENV PORT=3000 \
     READY_STATUS="To Do" \
     IN_PROGRESS_STATUS="In Progress" \
     CODEX_API_KEY= \
+    ANTHROPIC_API_KEY= \
     OPENAI_API_KEY= \
     GITHUB_TOKEN= \
     GH_TOKEN= \
@@ -37,6 +39,7 @@ ENV PORT=3000 \
     WORKFLOW_TIMEOUT_SECONDS=5400 \
     POST_WORKFLOW_RESULT_TO_JIRA=true \
     CODEX_EXEC_ARGS=--full-auto \
+    CLAUDE_EXEC_ARGS="--allowedTools Bash,Edit,Write,Read" \
     NGROK_ENABLE=false \
     NGROK_AUTHTOKEN= \
     NGROK_API_KEY= \
