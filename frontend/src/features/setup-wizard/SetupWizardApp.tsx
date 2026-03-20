@@ -47,6 +47,7 @@ function SetupWizardApp() {
   const [dockerContexts, setDockerContexts] = useState<DockerContextResponse["contexts"]>([]);
   const [selectedDockerContext, setSelectedDockerContext] = useState("");
   const [completedStepIndexes, setCompletedStepIndexes] = useState<number[]>([]);
+  const [isNavigationLocked, setIsNavigationLocked] = useState(false);
 
   useEffect(() => {
     document.title = "PRonto";
@@ -156,6 +157,17 @@ function SetupWizardApp() {
   );
 
   const launchSucceeded = Boolean(status?.docker.container.running);
+  const runStepIndex = STEPS.findIndex((step) => step.id === "run");
+
+  useEffect(() => {
+    if (launchSucceeded) {
+      setIsNavigationLocked(true);
+      setStepIndex(runStepIndex);
+      return;
+    }
+
+    setIsNavigationLocked(false);
+  }, [launchSucceeded, runStepIndex]);
 
   const updateField = (field: string, value: string) => {
     setConfig((current) => ({ ...current, [field]: value }));
@@ -283,12 +295,28 @@ function SetupWizardApp() {
 
       const latestStatus = await apiGet<StatusResponse>("/api/status");
       setStatus(latestStatus);
+      if (latestStatus.docker.container.running) {
+        setIsNavigationLocked(true);
+      }
       setActivity((current) => [...current, "Container started"]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
       setActivity((current) => [...current, `Launch failed: ${message}`]);
     } finally {
       setIsBusy(false);
+    }
+  };
+
+  const stopSetup = async () => {
+    try {
+      await apiPost("/api/docker/stop", {});
+      const latestStatus = await apiGet<StatusResponse>("/api/status");
+      setStatus(latestStatus);
+      setIsNavigationLocked(false);
+      setActivity((current) => [...current, "Container stopped"]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Stop failed: ${message}`]);
     }
   };
 
@@ -639,11 +667,37 @@ function SetupWizardApp() {
       : dockerPlatform === "linux"
         ? "On Linux, start your Docker daemon or service, then rerun the system check."
         : "On macOS, start Docker Desktop or Colima, then rerun the system check.";
+  const stepTestPassed = {
+    docker: Boolean(dockerCheck?.ok),
+    jira: Boolean(jiraCheck?.ok),
+    github: Boolean(gitHubCheck?.ok),
+    codex: Boolean(codexCheck?.ok),
+    ngrok: Boolean(ngrokCheck?.ok)
+  } as const;
+  const currentStepRequiresPassingTest = ["docker", "jira", "github", "codex", "ngrok"].includes(currentStep.id);
+  const currentStepHasPassingTest = currentStep.id in stepTestPassed
+    ? stepTestPassed[currentStep.id as keyof typeof stepTestPassed]
+    : true;
+  const createdPullRequests = useMemo(() => extractPullRequestUrls(status?.logs || ""), [status?.logs]);
 
   const nextStep = async () => {
+    if (currentStep.id === "docker" && !stepTestPassed.docker) {
+      setActivity((current) => [...current, "Run the system check successfully before continuing."]);
+      return;
+    }
     if (["jira", "github", "codex", "ngrok"].includes(currentStep.id)) {
       const valid = await validateStep(currentStep.id);
       if (!valid) {
+        return;
+      }
+      if (!currentStepHasPassingTest) {
+        const labels: Record<string, string> = {
+          jira: "Test Jira Connection",
+          github: "Test GitHub Access",
+          codex: "Test Codex Access",
+          ngrok: "Test Public Access"
+        };
+        setActivity((current) => [...current, `Run ${labels[currentStep.id]} successfully before continuing.`]);
         return;
       }
     }
@@ -659,10 +713,17 @@ function SetupWizardApp() {
   };
 
   const previousStep = () => {
+    if (isNavigationLocked) {
+      return;
+    }
     setStepIndex((current) => Math.max(current - 1, 0));
   };
 
   const goToStep = (index: number) => {
+    if (isNavigationLocked) {
+      setStepIndex(runStepIndex);
+      return;
+    }
     if (index === stepIndex) {
       return;
     }
@@ -697,7 +758,7 @@ function SetupWizardApp() {
               key={step.id}
               className={`step-item ${index === stepIndex ? "active" : ""} ${completedStepIndexes.includes(index) ? "completed" : ""} ${!completedStepIndexes.includes(index) && index !== stepIndex ? "locked" : ""}`}
             >
-              <button className="step-item-button" type="button" onClick={() => goToStep(index)} disabled={!completedStepIndexes.includes(index) && index !== stepIndex}>
+              <button className="step-item-button" type="button" onClick={() => goToStep(index)} disabled={isNavigationLocked || (!completedStepIndexes.includes(index) && index !== stepIndex)}>
                 <span>{String(index + 1).padStart(2, "0")}</span>
                 <strong>{step.title}</strong>
               </button>
@@ -961,25 +1022,67 @@ function SetupWizardApp() {
                     href="https://id.atlassian.com/manage-profile/security/api-tokens"
                     linkLabel="Open Atlassian token settings"
                   />
+                  <GuideLinkCard
+                    title="Open Jira webhook settings"
+                    description="After the connection test passes, open your Jira webhook admin page to create the transition webhook PRonto listens for."
+                    href={config.JIRA_BASE_URL ? `${config.JIRA_BASE_URL.replace(/\/+$/, "")}/secure/admin/Webhooks.jspa` : "https://support.atlassian.com/jira-cloud-administration/docs/manage-webhooks/"}
+                    linkLabel={config.JIRA_BASE_URL ? "Open webhook settings in Jira" : "Open Jira webhook docs"}
+                  />
                   <FieldGuide
                     items={[
                       ["Base URL", <code key="base">https://your-site.atlassian.net</code>],
                       ["User email", "The email tied to your Jira account"],
                       ["API token", "Paste the token you created in Atlassian"],
                       ["Webhook secret", "Optional. Use only if your Jira webhook is configured with one."],
+                      ["Webhook URL", <code key="webhook-url">https://&lt;public-url&gt;/webhooks/jira-transition</code>],
+                      ["Webhook event", "Use Issue updated, or the transition event if your Jira UI offers that directly."],
+                      ["JQL filter", <code key="jql-filter">status CHANGED FROM &quot;To Do&quot; TO &quot;In Progress&quot;</code>],
                       ["Status fields", "Only change these if your Jira workflow uses different status names."]
                     ]}
                   />
-                  <ConnectionTestPanel
-                    buttonClassName={`primary jira-check-button ${jiraCheck ? (jiraCheck.ok ? "is-pass" : "is-fail") : ""}`}
-                    buttonLabel={isCheckingJira ? "Testing Jira..." : "Test Jira Connection"}
-                    onClick={() => void runJiraCheck()}
-                    disabled={isCheckingJira}
-                    readyLabel="✓ Jira ready"
-                    resultTitle="Jira test result"
-                    result={jiraCheck}
-                    errorHelp={jiraErrorHelp}
-                  />
+                  <details className="guide-section codex-advanced">
+                    <summary>Additional information</summary>
+                    <div className="guide-stack">
+                      <p className="muted">
+                        Use these Jira docs if you need the full webhook setup flow, help creating API tokens, or more detail on webhook administration.
+                      </p>
+                      <ul className="plain-list guide-checklist">
+                        <li>
+                          <a href="https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/" target="_blank" rel="noreferrer">
+                            Atlassian API token docs
+                          </a>
+                        </li>
+                        <li>
+                          <a href="https://support.atlassian.com/jira-cloud-administration/docs/manage-webhooks/" target="_blank" rel="noreferrer">
+                            Jira Cloud webhook docs
+                          </a>
+                        </li>
+                        <li>
+                          <a href="https://support.atlassian.com/jira-software-cloud/docs/use-advanced-search-with-jira-query-language-jql/" target="_blank" rel="noreferrer">
+                            JQL search and filter docs
+                          </a>
+                        </li>
+                      </ul>
+                      <ol className="plain-list ordered">
+                        <li>Run <strong>Test Jira Connection</strong> first to confirm the base URL, email, and API token are correct.</li>
+                        <li>Open <strong>Jira Settings → System → Webhooks</strong>. You may need Jira admin access for this page.</li>
+                        <li>Create a webhook and set the URL to your public PRonto address plus <code>/webhooks/jira-transition</code>.</li>
+                        <li>Select <strong>Issue updated</strong> as the trigger, or a transition-specific event if your Jira instance exposes one.</li>
+                        <li>Add a JQL filter that matches the transition which should start PRonto, usually Ready to In Progress.</li>
+                        <li>If you use a Jira webhook secret, paste the same secret into the <strong>Webhook secret</strong> field here.</li>
+                      </ol>
+                      <p className="muted">
+                        If your workflow starts when a ticket moves from <strong>{config.READY_STATUS || "To Do"}</strong> to{" "}
+                        <strong>{config.IN_PROGRESS_STATUS || "In Progress"}</strong>, a good starting filter is:
+                      </p>
+                      <pre className="inline-code-block">
+{`project = ABC AND status CHANGED FROM "${config.READY_STATUS || "To Do"}" TO "${config.IN_PROGRESS_STATUS || "In Progress"}"`}
+                      </pre>
+                      <p className="muted">
+                        After launch, move a test issue through that transition and watch the PRonto launch console to confirm the webhook is reaching the container.
+                      </p>
+                    </div>
+                  </details>
                 </>
               }
             >
@@ -990,6 +1093,16 @@ function SetupWizardApp() {
               <Field label="Ready status" required value={config.READY_STATUS} onChange={(value) => updateField("READY_STATUS", value)} error={errors.READY_STATUS} />
               <Field label="In progress status" required value={config.IN_PROGRESS_STATUS} onChange={(value) => updateField("IN_PROGRESS_STATUS", value)} error={errors.IN_PROGRESS_STATUS} />
               <Field label="In review status" required value={config.IN_REVIEW_STATUS} onChange={(value) => updateField("IN_REVIEW_STATUS", value)} error={errors.IN_REVIEW_STATUS} />
+              <ConnectionTestPanel
+                buttonClassName={`primary jira-check-button ${jiraCheck ? (jiraCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                buttonLabel={isCheckingJira ? "Testing Jira..." : "Test Jira Connection"}
+                onClick={() => void runJiraCheck()}
+                disabled={isCheckingJira}
+                readyLabel="✓ Jira ready"
+                resultTitle="Jira test result"
+                result={jiraCheck}
+                errorHelp={jiraErrorHelp}
+              />
             </StepLayout>
           )}
 
@@ -1013,16 +1126,6 @@ function SetupWizardApp() {
                       ["Base branch", <>The branch new pull requests should target, usually <code>main</code>.</>]
                     ]}
                   />
-                  <ConnectionTestPanel
-                    buttonClassName={`primary github-check-button ${gitHubCheck ? (gitHubCheck.ok ? "is-pass" : "is-fail") : ""}`}
-                    buttonLabel={isCheckingGitHub ? "Testing GitHub..." : "Test GitHub Access"}
-                    onClick={() => void runGitHubCheck()}
-                    disabled={isCheckingGitHub}
-                    readyLabel="✓ GitHub ready"
-                    resultTitle="GitHub test result"
-                    result={gitHubCheck}
-                    errorHelp={gitHubErrorHelp}
-                  />
                 </>
               }
             >
@@ -1030,6 +1133,16 @@ function SetupWizardApp() {
               <Field label="GitHub token" required value={config.GITHUB_TOKEN} onChange={(value) => updateField("GITHUB_TOKEN", value)} error={errors.GITHUB_TOKEN} secret />
               <Field label="GH token alias" optional value={config.GH_TOKEN} onChange={(value) => updateField("GH_TOKEN", value)} error={errors.GH_TOKEN} secret />
               <Field label="Base branch" required value={config.WORKFLOW_BASE_BRANCH} onChange={(value) => updateField("WORKFLOW_BASE_BRANCH", value)} error={errors.WORKFLOW_BASE_BRANCH} placeholder="main" />
+              <ConnectionTestPanel
+                buttonClassName={`primary github-check-button ${gitHubCheck ? (gitHubCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                buttonLabel={isCheckingGitHub ? "Testing GitHub..." : "Test GitHub Access"}
+                onClick={() => void runGitHubCheck()}
+                disabled={isCheckingGitHub}
+                readyLabel="✓ GitHub ready"
+                resultTitle="GitHub test result"
+                result={gitHubCheck}
+                errorHelp={gitHubErrorHelp}
+              />
             </StepLayout>
           )}
 
@@ -1046,16 +1159,6 @@ function SetupWizardApp() {
                       ["Device login", "Best if you do not want to store an API key in the project env file."],
                       ["Persisted login", "Reuse an existing Codex session stored in the shared codex-state volume."]
                     ]}
-                  />
-                  <ConnectionTestPanel
-                    buttonClassName={`primary github-check-button ${codexCheck ? (codexCheck.ok ? "is-pass" : "is-fail") : ""}`}
-                    buttonLabel={isCheckingCodex ? "Testing Codex..." : "Test Codex Access"}
-                    onClick={() => void runCodexCheck()}
-                    disabled={isCheckingCodex}
-                    readyLabel="✓ Codex ready"
-                    resultTitle="Codex test result"
-                    result={codexCheck}
-                    errorHelp={codexErrorHelp}
                   />
                 </>
               }
@@ -1103,6 +1206,16 @@ function SetupWizardApp() {
                   error={errors.CODEX_EXEC_ARGS}
                 />
               </details>
+              <ConnectionTestPanel
+                buttonClassName={`primary github-check-button ${codexCheck ? (codexCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                buttonLabel={isCheckingCodex ? "Testing Codex..." : "Test Codex Access"}
+                onClick={() => void runCodexCheck()}
+                disabled={isCheckingCodex}
+                readyLabel="✓ Codex ready"
+                resultTitle="Codex test result"
+                result={codexCheck}
+                errorHelp={codexErrorHelp}
+              />
             </StepLayout>
           )}
 
@@ -1112,24 +1225,62 @@ function SetupWizardApp() {
               description="Enable this only if you want PRonto to expose the local webhook through ngrok."
               asideContent={
                 <>
-                  <GuideChecklist title="Optional capability" items={["Expose webhook publicly", "Use a reserved domain if you have one"]} />
+                  <GuideChecklist title="Optional capability" items={["Create an ngrok account", "Add your authtoken", "Optionally reserve a domain", "Use the generated URL in Jira"]} />
+                  <GuideLinkCard
+                    title="Open ngrok dashboard"
+                    description="Use the ngrok dashboard to copy your authtoken, create an API key, and optionally reserve a static domain."
+                    href="https://dashboard.ngrok.com/"
+                    linkLabel="Open ngrok dashboard"
+                  />
                   <FieldGuide
                     items={[
-                      ["ngrok enable", "Leave this off if you already have another public ingress path."],
-                      ["Authtoken", "Required only when ngrok is enabled."],
-                      ["Reserved domain", "Optional. Without one, ngrok uses an ephemeral URL."]
+                      ["ngrok enable", "Turn this on only if you want PRonto to expose the local Jira webhook publicly."],
+                      ["Authtoken", "Required when ngrok is enabled. Copy it from the Getting Started section of your ngrok dashboard."],
+                      ["API key", "Needed only if you want PRonto to verify or auto-provision a reserved domain."],
+                      ["Reserved domain", "Optional. Leave blank for an ephemeral URL, or enter your reserved ngrok domain if you want a stable webhook URL."],
+                      ["Webhook path", <code>/webhooks/jira-transition</code>]
                     ]}
                   />
-                  <ConnectionTestPanel
-                    buttonClassName={`primary github-check-button ${ngrokCheck ? (ngrokCheck.ok ? "is-pass" : "is-fail") : ""}`}
-                    buttonLabel={isCheckingNgrok ? "Testing ngrok..." : "Test Public Access"}
-                    onClick={() => void runNgrokCheck()}
-                    disabled={isCheckingNgrok}
-                    readyLabel="✓ ngrok ready"
-                    resultTitle="ngrok test result"
-                    result={ngrokCheck}
-                    errorHelp={ngrokErrorHelp}
-                  />
+                  <details className="guide-section codex-advanced">
+                    <summary>Additional information</summary>
+                    <div className="guide-stack">
+                      <p className="muted">
+                        Use these docs if you need the full ngrok setup flow, help with reserved domains, or a refresher on where to find your credentials.
+                      </p>
+                      <ul className="plain-list guide-checklist">
+                        <li>
+                          <a href="https://ngrok.com/docs/getting-started/" target="_blank" rel="noreferrer">
+                            ngrok getting started
+                          </a>
+                        </li>
+                        <li>
+                          <a href="https://ngrok.com/docs/universal-gateway/domains/" target="_blank" rel="noreferrer">
+                            Reserved domains and static URLs
+                          </a>
+                        </li>
+                        <li>
+                          <a href="https://ngrok.com/docs/agent/" target="_blank" rel="noreferrer">
+                            ngrok agent and authtoken docs
+                          </a>
+                        </li>
+                        <li>
+                          <a href="https://ngrok.com/docs/api/" target="_blank" rel="noreferrer">
+                            ngrok API docs
+                          </a>
+                        </li>
+                      </ul>
+                      <ol className="plain-list ordered">
+                        <li>Create or sign in to your ngrok account.</li>
+                        <li>Copy your authtoken from the dashboard and paste it here.</li>
+                        <li>If you want a stable webhook URL, reserve a domain and add both the domain and an ngrok API key here.</li>
+                        <li>Run <strong>Test Public Access</strong> before launch.</li>
+                        <li>After launch, use the ngrok URL plus <code>/webhooks/jira-transition</code> in Jira.</li>
+                      </ol>
+                      <p className="muted">
+                        If you leave the reserved domain blank, PRonto will use an ephemeral ngrok URL. You can copy that live URL from the launch logs and then paste it into Jira.
+                      </p>
+                    </div>
+                  </details>
                 </>
               }
             >
@@ -1137,6 +1288,16 @@ function SetupWizardApp() {
               <Field label="ngrok authtoken" optional value={config.NGROK_AUTHTOKEN} onChange={(value) => updateField("NGROK_AUTHTOKEN", value)} error={errors.NGROK_AUTHTOKEN} secret />
               <Field label="ngrok API key" optional value={config.NGROK_API_KEY} onChange={(value) => updateField("NGROK_API_KEY", value)} error={errors.NGROK_API_KEY} secret />
               <Field label="ngrok reserved domain" optional value={config.NGROK_DOMAIN} onChange={(value) => updateField("NGROK_DOMAIN", value)} error={errors.NGROK_DOMAIN} placeholder="your-domain.ngrok-free.app" />
+              <ConnectionTestPanel
+                buttonClassName={`primary github-check-button ${ngrokCheck ? (ngrokCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                buttonLabel={isCheckingNgrok ? "Testing ngrok..." : "Test Public Access"}
+                onClick={() => void runNgrokCheck()}
+                disabled={isCheckingNgrok}
+                readyLabel="✓ ngrok ready"
+                resultTitle="ngrok test result"
+                result={ngrokCheck}
+                errorHelp={ngrokErrorHelp}
+              />
             </StepLayout>
           )}
 
@@ -1180,9 +1341,7 @@ function SetupWizardApp() {
                   </button>
                   <button
                     className="secondary hero-secondary"
-                    onClick={() => {
-                      void apiPost("/api/docker/stop", {}).then(() => apiGet<StatusResponse>("/api/status").then(setStatus));
-                    }}
+                    onClick={() => void stopSetup()}
                     disabled={isBusy}
                   >
                     Stop Service
@@ -1194,13 +1353,28 @@ function SetupWizardApp() {
                     {activity.length === 0 ? <li>No actions yet.</li> : activity.map((item) => <li key={item}>{item}</li>)}
                   </ul>
                 </div>
+                <div className="activity-card launch-activity">
+                  <h4>Created pull requests</h4>
+                  <ul className="plain-list pr-link-list">
+                    {createdPullRequests.length === 0 ? (
+                      <li>No pull requests detected yet.</li>
+                    ) : (
+                      createdPullRequests.map((url) => (
+                        <li key={url}>
+                          <a href={url} target="_blank" rel="noreferrer">
+                            {url}
+                          </a>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                </div>
               </div>
               <div className="guide-card terminal-side-panel">
                 <div className="run-console-brand">
                   <img src={prontoRocket} alt="" className="run-console-mark brand-logo-inline" />
                   <h3>Console output</h3>
                 </div>
-                <img src={prontoConsoleIllustration} alt="" className="run-console-illustration" />
                 <pre>{status?.logs || "No logs yet."}</pre>
               </div>
             </div>
@@ -1209,9 +1383,13 @@ function SetupWizardApp() {
 
         {stepIndex > 0 ? (
           <footer className="footer-nav">
-            <button className="secondary" onClick={previousStep} disabled={isBusy}>Back</button>
-            {stepIndex < STEPS.length - 1 ? (
-              <button className="primary hero-primary" onClick={() => void nextStep()} disabled={isBusy}>
+            <button className="secondary" onClick={previousStep} disabled={isBusy || isNavigationLocked}>Back</button>
+            {stepIndex < STEPS.length - 1 && !isNavigationLocked ? (
+              <button
+                className="primary hero-primary"
+                onClick={() => void nextStep()}
+                disabled={isBusy || (currentStepRequiresPassingTest && !currentStepHasPassingTest)}
+              >
                 Next
               </button>
             ) : null}
@@ -1232,6 +1410,11 @@ function SummaryStep(props: { number: string; title: string; text: string }) {
       </div>
     </div>
   );
+}
+
+function extractPullRequestUrls(text: string): string[] {
+  const matches = text.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g) || [];
+  return Array.from(new Set(matches));
 }
 
 function GuideChecklist(props: { title: string; items: string[] }) {
