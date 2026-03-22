@@ -62,7 +62,10 @@ test("getGitHubReadinessStatus returns authenticated login on success", async ()
 
 test("getCodexReadinessStatus reports missing auth options", async () => {
   const service = createStatusService();
-  const result = await service.getCodexReadinessStatus({});
+  const result = await service.getCodexReadinessStatus({
+    CODEX_BOOTSTRAP_LOGIN: "true",
+    CODEX_DEVICE_LOGIN_ON_START: "false"
+  });
   assert.equal(result.ok, false);
   assert.match(result.checks[0].output, /CODEX_API_KEY or OPENAI_API_KEY/);
 });
@@ -94,6 +97,43 @@ test("getCodexReadinessStatus accepts device login mode", async () => {
   });
   assert.equal(result.ok, true);
   assert.match(result.checks[0].output, /Device login is enabled/);
+});
+
+test("getCodexReadinessStatus accepts Claude device login mode", async () => {
+  const service = createStatusService();
+
+  const result = await service.getCodexReadinessStatus({
+    AI_AGENT: "claude",
+    CLAUDE_BOOTSTRAP_LOGIN: "true",
+    CLAUDE_DEVICE_LOGIN_ON_START: "true"
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.checks[0].output, /Device login is enabled/);
+});
+
+test("getCodexReadinessStatus accepts Claude persisted login mode", async () => {
+  const service = createStatusService();
+  const result = await service.getCodexReadinessStatus({
+    AI_AGENT: "claude",
+    CLAUDE_BOOTSTRAP_LOGIN: "false",
+    CLAUDE_DEVICE_LOGIN_ON_START: "false"
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.checks[0].output, /Persisted login mode selected/);
+});
+
+test("getCodexReadinessStatus rejects invalid Claude login mode combination", async () => {
+  const service = createStatusService();
+  const result = await service.getCodexReadinessStatus({
+    AI_AGENT: "claude",
+    CLAUDE_BOOTSTRAP_LOGIN: "true",
+    CLAUDE_DEVICE_LOGIN_ON_START: "false"
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.checks[0].output, /Enable CLAUDE_DEVICE_LOGIN_ON_START/);
 });
 
 test("getNgrokReadinessStatus passes when ngrok is disabled", async () => {

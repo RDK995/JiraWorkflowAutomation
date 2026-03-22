@@ -47,10 +47,10 @@ class AppLogicTests(unittest.TestCase):
     def test_build_prompt_contains_key_and_url(self):
         self.assertTrue(self.app_module.WORKFLOW_SCRIPT.endswith("jira_ticket_to_pr.sh"))
 
-    def test_run_codex_cli_workflow_missing_script(self):
+    def test_run_ai_workflow_missing_script(self):
         with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./does-not-exist.sh"):
             with self.assertRaises(RuntimeError):
-                self.app_module.run_codex_cli_workflow("KAN-123")
+                self.app_module.run_ai_workflow("KAN-123")
 
     def test_transition_issue_to_status_success(self):
         get_resp = Mock()
@@ -94,7 +94,7 @@ class AppLogicTests(unittest.TestCase):
 
     def test_run_automation_transitions_when_pr_present(self):
         with patch.object(
-            self.app_module, "run_codex_cli_workflow", return_value="https://github.com/org/repo/pull/12"
+            self.app_module, "run_ai_workflow", return_value="https://github.com/org/repo/pull/12"
         ), patch.object(self.app_module, "add_issue_comment") as comment_mock, patch.object(
             self.app_module, "transition_issue_to_status"
         ) as transition_mock:
@@ -105,7 +105,7 @@ class AppLogicTests(unittest.TestCase):
 
     def test_run_automation_transitions_when_comments_disabled(self):
         with patch.object(
-            self.app_module, "run_codex_cli_workflow", return_value="https://github.com/org/repo/pull/12"
+            self.app_module, "run_ai_workflow", return_value="https://github.com/org/repo/pull/12"
         ), patch.object(self.app_module, "POST_WORKFLOW_RESULT_TO_JIRA", False), patch.object(
             self.app_module, "add_issue_comment"
         ) as comment_mock, patch.object(self.app_module, "transition_issue_to_status") as transition_mock:
@@ -116,12 +116,25 @@ class AppLogicTests(unittest.TestCase):
 
     def test_run_automation_comments_error_on_failure(self):
         with patch.object(
-            self.app_module, "run_codex_cli_workflow", side_effect=RuntimeError("boom")
+            self.app_module, "run_ai_workflow", side_effect=RuntimeError("boom")
         ), patch.object(self.app_module, "add_issue_comment") as comment_mock:
             self.app_module.run_automation_for_issue("KAN-123")
 
         self.assertTrue(comment_mock.called)
         self.assertIn("failed", comment_mock.call_args.args[1].lower())
+
+    def test_ai_agent_label_codex(self):
+        self.assertIn("Codex", self.app_module.AI_AGENT_LABEL)
+
+    def test_run_ai_workflow_passes_agent_env(self):
+        """Verify run_ai_workflow injects AI_AGENT into subprocess env."""
+        with patch("src.app.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="ok", stderr="")
+            with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
+                self.app_module.run_ai_workflow("KAN-123")
+            call_kwargs = mock_run.call_args
+            env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env", {})
+            self.assertEqual(env.get("AI_AGENT"), self.app_module.AI_AGENT)
 
 
 class AppRouteTests(unittest.TestCase):

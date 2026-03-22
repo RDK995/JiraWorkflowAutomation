@@ -10,12 +10,17 @@ export const CONFIG_FIELDS = [
   "GITHUB_TOKEN",
   "GH_TOKEN",
   "REQUIRE_GITHUB_AUTH",
+  "AI_AGENT",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
   "CODEX_BOOTSTRAP_LOGIN",
   "CODEX_DEVICE_LOGIN_ON_START",
+  "CLAUDE_BOOTSTRAP_LOGIN",
+  "CLAUDE_DEVICE_LOGIN_ON_START",
   "WORKFLOW_BASE_BRANCH",
   "CODEX_EXEC_ARGS",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_EXEC_ARGS",
   "NGROK_ENABLE",
   "NGROK_AUTHTOKEN",
   "NGROK_API_KEY",
@@ -34,12 +39,17 @@ export const DEFAULT_CONFIG = {
   GITHUB_TOKEN: "",
   GH_TOKEN: "",
   REQUIRE_GITHUB_AUTH: "true",
+  AI_AGENT: "codex",
   CODEX_API_KEY: "",
   OPENAI_API_KEY: "",
   CODEX_BOOTSTRAP_LOGIN: "true",
-  CODEX_DEVICE_LOGIN_ON_START: "false",
+  CODEX_DEVICE_LOGIN_ON_START: "true",
+  CLAUDE_BOOTSTRAP_LOGIN: "true",
+  CLAUDE_DEVICE_LOGIN_ON_START: "true",
   WORKFLOW_BASE_BRANCH: "main",
   CODEX_EXEC_ARGS: "--full-auto",
+  ANTHROPIC_API_KEY: "",
+  CLAUDE_EXEC_ARGS: "--allowedTools Bash,Edit,Write,Read",
   NGROK_ENABLE: "false",
   NGROK_AUTHTOKEN: "",
   NGROK_API_KEY: "",
@@ -50,6 +60,8 @@ const BOOLEAN_FIELDS = new Set([
   "REQUIRE_GITHUB_AUTH",
   "CODEX_BOOTSTRAP_LOGIN",
   "CODEX_DEVICE_LOGIN_ON_START",
+  "CLAUDE_BOOTSTRAP_LOGIN",
+  "CLAUDE_DEVICE_LOGIN_ON_START",
   "NGROK_ENABLE"
 ]);
 
@@ -105,11 +117,25 @@ export function validateConfig(input = {}) {
     errors.GITHUB_TOKEN = "GitHub authentication is required for push and PR creation.";
   }
 
-  const openAiToken = config.CODEX_API_KEY || config.OPENAI_API_KEY;
-  const bootstrapLogin = config.CODEX_BOOTSTRAP_LOGIN === "true";
-  const deviceLogin = config.CODEX_DEVICE_LOGIN_ON_START === "true";
-  if (bootstrapLogin && !openAiToken && !deviceLogin) {
-    errors.CODEX_API_KEY = "Provide an API key or enable device login on start.";
+  if (!["codex", "claude"].includes(config.AI_AGENT)) {
+    errors.AI_AGENT = "Choose a supported AI integration (codex or claude).";
+  }
+
+  if (config.AI_AGENT === "codex") {
+    const openAiToken = config.CODEX_API_KEY || config.OPENAI_API_KEY;
+    const bootstrapLogin = config.CODEX_BOOTSTRAP_LOGIN === "true";
+    const deviceLogin = config.CODEX_DEVICE_LOGIN_ON_START === "true";
+    if (bootstrapLogin && !openAiToken && !deviceLogin) {
+      errors.CODEX_API_KEY = "Provide an API key or enable device login on start.";
+    }
+  }
+
+  if (config.AI_AGENT === "claude") {
+    const bootstrapLogin = config.CLAUDE_BOOTSTRAP_LOGIN === "true";
+    const deviceLogin = config.CLAUDE_DEVICE_LOGIN_ON_START === "true";
+    if (bootstrapLogin && !deviceLogin) {
+      errors.CLAUDE_DEVICE_LOGIN_ON_START = "Enable Claude device login on start, or disable bootstrap login to use persisted login.";
+    }
   }
 
   if (config.NGROK_ENABLE === "true" && !config.NGROK_AUTHTOKEN) {
@@ -158,13 +184,22 @@ export function serializeEnv(configInput = {}) {
     "GH_TOKEN=" + quoteIfNeeded(config.GH_TOKEN),
     "REQUIRE_GITHUB_AUTH=" + config.REQUIRE_GITHUB_AUTH,
     "",
+    "# AI integration selection (codex | claude)",
+    "AI_AGENT=" + quoteIfNeeded(config.AI_AGENT),
+    "",
     "# Codex CLI authentication",
     "CODEX_API_KEY=" + quoteIfNeeded(config.CODEX_API_KEY),
     "OPENAI_API_KEY=" + quoteIfNeeded(config.OPENAI_API_KEY),
     "CODEX_BOOTSTRAP_LOGIN=" + config.CODEX_BOOTSTRAP_LOGIN,
     "CODEX_DEVICE_LOGIN_ON_START=" + config.CODEX_DEVICE_LOGIN_ON_START,
+    "CLAUDE_BOOTSTRAP_LOGIN=" + config.CLAUDE_BOOTSTRAP_LOGIN,
+    "CLAUDE_DEVICE_LOGIN_ON_START=" + config.CLAUDE_DEVICE_LOGIN_ON_START,
     "WORKFLOW_BASE_BRANCH=" + quoteIfNeeded(config.WORKFLOW_BASE_BRANCH),
     "CODEX_EXEC_ARGS=" + quoteIfNeeded(config.CODEX_EXEC_ARGS),
+    "",
+    "# Claude Code authentication",
+    "ANTHROPIC_API_KEY=" + quoteIfNeeded(config.ANTHROPIC_API_KEY),
+    "CLAUDE_EXEC_ARGS=" + quoteIfNeeded(config.CLAUDE_EXEC_ARGS),
     "",
     "# Optional: expose local webhook through ngrok from inside container",
     "NGROK_ENABLE=" + config.NGROK_ENABLE,

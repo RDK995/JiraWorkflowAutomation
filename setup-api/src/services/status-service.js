@@ -162,6 +162,63 @@ export function createStatusService({
 
     async getCodexReadinessStatus(configInput = {}) {
       const config = normalizeConfig(configInput);
+      const aiAgent = config.AI_AGENT || "codex";
+
+      if (aiAgent === "claude") {
+        const bootstrapLogin = config.CLAUDE_BOOTSTRAP_LOGIN === "true";
+        const deviceLogin = config.CLAUDE_DEVICE_LOGIN_ON_START === "true";
+
+        if (bootstrapLogin && deviceLogin) {
+          return {
+            ok: true,
+            checks: [
+              {
+                command: "claude login mode",
+                ok: true,
+                output: "Device login is enabled. Complete Claude Code authentication in the running container if prompted."
+              }
+            ]
+          };
+        }
+
+        if (!bootstrapLogin) {
+          return {
+            ok: true,
+            checks: [
+              {
+                command: "claude login mode",
+                ok: true,
+                output: "Persisted login mode selected. Verify the jira-automation container has an existing Claude Code session before launch."
+              }
+            ]
+          };
+        }
+
+        return {
+          ok: false,
+          checks: [
+            {
+              command: "claude login mode",
+              ok: false,
+              output: "Enable CLAUDE_DEVICE_LOGIN_ON_START, or set CLAUDE_BOOTSTRAP_LOGIN=false to use persisted login."
+            }
+          ]
+        };
+      }
+
+      if (aiAgent !== "codex") {
+        return {
+          ok: false,
+          checks: [
+            {
+              command: "ai integration",
+              ok: false,
+              output: `Unsupported AI_AGENT value: ${aiAgent}. Supported values are codex and claude.`
+            }
+          ]
+        };
+      }
+
       const apiKey = config.CODEX_API_KEY || config.OPENAI_API_KEY;
       const bootstrapLogin = config.CODEX_BOOTSTRAP_LOGIN === "true";
       const deviceLogin = config.CODEX_DEVICE_LOGIN_ON_START === "true";

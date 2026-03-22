@@ -32,11 +32,14 @@ JIRA_WEBHOOK_SECRET = env_clean("JIRA_WEBHOOK_SECRET", "")
 READY_STATUS = env_clean("READY_STATUS", "To Do")
 IN_PROGRESS_STATUS = env_clean("IN_PROGRESS_STATUS", "In Progress")
 IN_REVIEW_STATUS = env_clean("IN_REVIEW_STATUS", "In Review")
+AI_AGENT = env_clean("AI_AGENT", "codex")
 WORKFLOW_SCRIPT = env_clean("WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh")
 WORKFLOW_BASE_BRANCH = env_clean("WORKFLOW_BASE_BRANCH", "main")
 WORKFLOW_TIMEOUT_SECONDS = int(env_clean("WORKFLOW_TIMEOUT_SECONDS", "5400"))
 POST_WORKFLOW_RESULT_TO_JIRA = env_clean("POST_WORKFLOW_RESULT_TO_JIRA", "true").lower() == "true"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+AI_AGENT_LABEL = {"codex": "Codex CLI", "claude": "Claude Code"}.get(AI_AGENT, AI_AGENT)
 
 REQUIRED_ENV = ["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN"]
 missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
@@ -117,18 +120,20 @@ def transition_issue_to_status(issue_key: str, target_status: str) -> None:
         )
 
 
-def run_codex_cli_workflow(issue_key: str) -> str:
-    # Webhook path delegates implementation to the existing codex CLI workflow script.
+def run_ai_workflow(issue_key: str) -> str:
+    """Run the AI-powered workflow script (supports both Codex and Claude Code)."""
     script_path = (REPO_ROOT / WORKFLOW_SCRIPT).resolve()
     if not script_path.exists():
         raise RuntimeError(f"Workflow script not found: {script_path}")
 
     command = [str(script_path), issue_key, WORKFLOW_BASE_BRANCH]
-    app.logger.info("Executing workflow script: %s", " ".join(command))
+    env = os.environ.copy()
+    env["AI_AGENT"] = AI_AGENT
+    app.logger.info("Executing workflow script (agent=%s): %s", AI_AGENT, " ".join(command))
     proc = subprocess.run(
         command,
         cwd=str(REPO_ROOT),
-        env=os.environ.copy(),
+        env=env,
         capture_output=True,
         text=True,
         timeout=WORKFLOW_TIMEOUT_SECONDS,
@@ -136,7 +141,7 @@ def run_codex_cli_workflow(issue_key: str) -> str:
     combined = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
     if proc.returncode != 0:
         tail = "\n".join(combined.strip().splitlines()[-30:])
-        raise RuntimeError(f"Codex CLI workflow failed (exit {proc.returncode}).\n{tail}")
+        raise RuntimeError(f"{AI_AGENT_LABEL} workflow failed (exit {proc.returncode}).\n{tail}")
     return combined.strip()
 
 
@@ -147,9 +152,9 @@ def extract_pr_url(text: str) -> str:
 
 def run_automation_for_issue(issue_key: str) -> None:
     try:
-        app.logger.info("Automation started: issue=%s", issue_key)
-        output = run_codex_cli_workflow(issue_key)
-        app.logger.info("Automation completed: issue=%s", issue_key)
+        app.logger.info("Automation started: issue=%s agent=%s", issue_key, AI_AGENT)
+        output = run_ai_workflow(issue_key)
+        app.logger.info("Automation completed: issue=%s agent=%s", issue_key, AI_AGENT)
         pr_url = extract_pr_url(output)
         if pr_url:
             transition_issue_to_status(issue_key, IN_REVIEW_STATUS)
@@ -159,7 +164,7 @@ def run_automation_for_issue(issue_key: str) -> None:
             if pr_url:
                 add_issue_comment(
                     issue_key,
-                    "Codex CLI automation completed successfully.\n\n"
+                    f"{AI_AGENT_LABEL} automation completed successfully.\n\n"
                     f"Pull Request: {pr_url}\n"
                     f"Base branch: {WORKFLOW_BASE_BRANCH}",
                 )
@@ -167,17 +172,17 @@ def run_automation_for_issue(issue_key: str) -> None:
                 excerpt = "\n".join(output.splitlines()[-20:])[:2800]
                 add_issue_comment(
                     issue_key,
-                    "Codex CLI automation completed successfully.\n\n"
+                    f"{AI_AGENT_LABEL} automation completed successfully.\n\n"
                     f"Base branch: {WORKFLOW_BASE_BRANCH}\n"
                     f"Workflow output (tail):\n{excerpt}",
                 )
     except Exception as exc:
-        app.logger.exception("Automation error: issue=%s", issue_key)
+        app.logger.exception("Automation error: issue=%s agent=%s", issue_key, AI_AGENT)
         if POST_WORKFLOW_RESULT_TO_JIRA:
             error_text = str(exc)
             if len(error_text) > 2800:
                 error_text = error_text[:2800]
-            add_issue_comment(issue_key, f"Codex CLI automation failed.\n\nError:\n{error_text}")
+            add_issue_comment(issue_key, f"{AI_AGENT_LABEL} automation failed.\n\nError:\n{error_text}")
 
 
 def enqueue_automation(issue_key: str) -> None:

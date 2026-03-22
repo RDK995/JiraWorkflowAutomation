@@ -232,7 +232,7 @@ def main() -> None:
             "## Target Repository",
             target_repo if target_repo else "MISSING_REPOSITORY (add `GitHub Repo: owner/repo` to the Jira ticket)",
             "",
-            "## Implementation instructions for Codex (repo conventions + reference KEY)",
+            "## Implementation instructions",
             f"- Reference issue key `{key}` in branch names, commits, and PR descriptions.",
             "- Keep Python style and existing environment variable names consistent with this repo.",
             "- Preserve current Flask webhook behavior and endpoint contracts.",
