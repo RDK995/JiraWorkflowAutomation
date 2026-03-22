@@ -166,6 +166,8 @@ test("runContainer uses configured env file path", async () => {
 
   await service.runContainer();
   assert.deepEqual(seenArgs.slice(0, 4), ["run", "--env-file", "/tmp/custom.env", "-p"]);
+  assert.ok(seenArgs.includes("codex-state:/data/codex"));
+  assert.ok(seenArgs.includes("claude-state:/data/claude"));
 });
 
 test("startColima runs colima start", async () => {

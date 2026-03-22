@@ -6,6 +6,7 @@ import { envFilePath, projectRoot } from "../paths.js";
 const IMAGE_NAME = "jira-workflow-automation";
 const CONTAINER_NAME = "jira-automation";
 const CODEX_VOLUME = "codex-state:/data/codex";
+const CLAUDE_VOLUME = "claude-state:/data/claude";
 
 export function createDockerService({
   execFileImpl = execFile,
@@ -388,6 +389,8 @@ export function createDockerService({
         "3000:3000",
         "-v",
         CODEX_VOLUME,
+        "-v",
+        CLAUDE_VOLUME,
         "--name",
         CONTAINER_NAME,
         "-d",

@@ -112,7 +112,7 @@ if [[ "${AI_AGENT:-codex}" == "claude" ]]; then
   fi
 fi
 
-if [[ "${CODEX_BOOTSTRAP_LOGIN:-false}" == "true" ]]; then
+if [[ "${AI_AGENT:-codex}" == "codex" && "${CODEX_BOOTSTRAP_LOGIN:-false}" == "true" ]]; then
   if ! codex login status >/dev/null 2>&1; then
     if [[ -z "${OPENAI_API_KEY:-}" ]]; then
       if [[ "${CODEX_DEVICE_LOGIN_ON_START:-false}" == "true" ]]; then
