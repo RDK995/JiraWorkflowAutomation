@@ -34,6 +34,35 @@ test("validateConfig allows persisted Codex login when bootstrap login is disabl
   assert.equal(result.isValid, true);
 });
 
+test("validateConfig requires Claude device login when Claude bootstrap is enabled", () => {
+  const result = validateConfig({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    AI_AGENT: "claude",
+    CLAUDE_BOOTSTRAP_LOGIN: "true",
+    CLAUDE_DEVICE_LOGIN_ON_START: "false"
+  });
+
+  assert.equal(result.isValid, false);
+  assert.equal(result.errors.CLAUDE_DEVICE_LOGIN_ON_START, "Enable Claude device login on start, or disable bootstrap login to use persisted login.");
+});
+
+test("validateConfig allows persisted Claude login when Claude bootstrap is disabled", () => {
+  const result = validateConfig({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    AI_AGENT: "claude",
+    CLAUDE_BOOTSTRAP_LOGIN: "false",
+    CLAUDE_DEVICE_LOGIN_ON_START: "false"
+  });
+
+  assert.equal(result.isValid, true);
+});
+
 test("validateConfig requires ngrok authtoken when ngrok is enabled", () => {
   const result = validateConfig({
     JIRA_BASE_URL: "https://example.atlassian.net",

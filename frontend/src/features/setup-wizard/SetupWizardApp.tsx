@@ -27,12 +27,12 @@ function SetupWizardApp() {
   const [dockerCheck, setDockerCheck] = useState<ReadinessCheckResponse | null>(null);
   const [jiraCheck, setJiraCheck] = useState<ReadinessCheckResponse | null>(null);
   const [gitHubCheck, setGitHubCheck] = useState<ReadinessCheckResponse | null>(null);
-  const [codexCheck, setCodexCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [integrationCheck, setIntegrationCheck] = useState<ReadinessCheckResponse | null>(null);
   const [ngrokCheck, setNgrokCheck] = useState<ReadinessCheckResponse | null>(null);
   const [isCheckingDocker, setIsCheckingDocker] = useState(false);
   const [isCheckingJira, setIsCheckingJira] = useState(false);
   const [isCheckingGitHub, setIsCheckingGitHub] = useState(false);
-  const [isCheckingCodex, setIsCheckingCodex] = useState(false);
+  const [isCheckingIntegration, setIsCheckingIntegration] = useState(false);
   const [isCheckingNgrok, setIsCheckingNgrok] = useState(false);
   const [isCheckingSetupApi, setIsCheckingSetupApi] = useState(false);
   const [isStartingColima, setIsStartingColima] = useState(false);
@@ -48,6 +48,7 @@ function SetupWizardApp() {
   const [selectedDockerContext, setSelectedDockerContext] = useState("");
   const [completedStepIndexes, setCompletedStepIndexes] = useState<number[]>([]);
   const [isNavigationLocked, setIsNavigationLocked] = useState(false);
+  const [hasLaunchedThisSession, setHasLaunchedThisSession] = useState(false);
 
   useEffect(() => {
     document.title = "PRonto";
@@ -139,35 +140,52 @@ function SetupWizardApp() {
     if (config.CODEX_BOOTSTRAP_LOGIN === "false") {
       return "persisted";
     }
-    return "api-key";
+    return "device";
   }, [config.CODEX_BOOTSTRAP_LOGIN, config.CODEX_DEVICE_LOGIN_ON_START]);
-
-  const codexApiKeyValue = config.OPENAI_API_KEY || config.CODEX_API_KEY;
+  const claudeAuthMode = useMemo(() => {
+    if (config.CLAUDE_DEVICE_LOGIN_ON_START === "true") {
+      return "device";
+    }
+    if (config.CLAUDE_BOOTSTRAP_LOGIN === "false") {
+      return "persisted";
+    }
+    return "device";
+  }, [config.CLAUDE_BOOTSTRAP_LOGIN, config.CLAUDE_DEVICE_LOGIN_ON_START]);
+  const selectedAiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
+  const integrationDisplayLabel = selectedAiAgent === "claude" ? "Claude Code" : "Codex";
 
   const reviewItems = useMemo(
     () => [
       ["Jira base URL", config.JIRA_BASE_URL || "Missing"],
       ["Jira user", config.JIRA_USER_EMAIL || "Missing"],
       ["GitHub token", config.GITHUB_TOKEN ? "Configured" : config.GH_TOKEN ? "Configured via GH_TOKEN" : "Missing"],
-      ["Codex auth", codexAuthMode === "api-key" ? (codexApiKeyValue ? "API key" : "Missing") : codexAuthMode === "device" ? "Device login" : "Persisted login"],
+      ["AI integration", integrationDisplayLabel],
+      [
+        "Integration auth",
+        selectedAiAgent === "claude"
+          ? (claudeAuthMode === "device" ? "Device login" : "Persisted login")
+          : codexAuthMode === "device"
+              ? "Device login"
+              : "Persisted login"
+      ],
       ["Base branch", config.WORKFLOW_BASE_BRANCH || "Missing"],
       ["ngrok", config.NGROK_ENABLE === "true" ? "Enabled" : "Disabled"]
     ],
-    [codexApiKeyValue, codexAuthMode, config]
+    [claudeAuthMode, codexAuthMode, config, integrationDisplayLabel, selectedAiAgent]
   );
 
   const launchSucceeded = Boolean(status?.docker.container.running);
   const runStepIndex = STEPS.findIndex((step) => step.id === "run");
 
   useEffect(() => {
-    if (launchSucceeded) {
+    if (launchSucceeded && hasLaunchedThisSession) {
       setIsNavigationLocked(true);
       setStepIndex(runStepIndex);
       return;
     }
 
     setIsNavigationLocked(false);
-  }, [launchSucceeded, runStepIndex]);
+  }, [launchSucceeded, hasLaunchedThisSession, runStepIndex]);
 
   const updateField = (field: string, value: string) => {
     setConfig((current) => ({ ...current, [field]: value }));
@@ -177,8 +195,8 @@ function SetupWizardApp() {
     if (["GITHUB_TOKEN", "GH_TOKEN"].includes(field)) {
       setGitHubCheck(null);
     }
-    if (["CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_BOOTSTRAP_LOGIN", "CODEX_DEVICE_LOGIN_ON_START"].includes(field)) {
-      setCodexCheck(null);
+    if (["AI_AGENT", "CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_BOOTSTRAP_LOGIN", "CODEX_DEVICE_LOGIN_ON_START", "CLAUDE_BOOTSTRAP_LOGIN", "CLAUDE_DEVICE_LOGIN_ON_START", "CLAUDE_EXEC_ARGS", "ANTHROPIC_API_KEY"].includes(field)) {
+      setIntegrationCheck(null);
     }
     if (["NGROK_ENABLE", "NGROK_AUTHTOKEN", "NGROK_API_KEY", "NGROK_DOMAIN"].includes(field)) {
       setNgrokCheck(null);
@@ -215,10 +233,12 @@ function SetupWizardApp() {
       return {
         ...current,
         CODEX_BOOTSTRAP_LOGIN: "true",
-        CODEX_DEVICE_LOGIN_ON_START: "false"
+        CODEX_DEVICE_LOGIN_ON_START: "true",
+        CODEX_API_KEY: "",
+        OPENAI_API_KEY: ""
       };
     });
-    setCodexCheck(null);
+    setIntegrationCheck(null);
     setErrors((current) => {
       const next = { ...current };
       delete next.CODEX_API_KEY;
@@ -229,17 +249,72 @@ function SetupWizardApp() {
     });
   };
 
-  const updateCodexApiKey = (value: string) => {
+  const updateAiAgent = (agent: string) => {
+    if (agent === "claude") {
+      setConfig((current) => ({
+        ...current,
+        AI_AGENT: "claude",
+        CLAUDE_BOOTSTRAP_LOGIN: "true",
+        CLAUDE_DEVICE_LOGIN_ON_START: "true",
+        ANTHROPIC_API_KEY: ""
+      }));
+      setIntegrationCheck(null);
+      setErrors((current) => {
+        const next = { ...current };
+        delete next.AI_AGENT;
+        delete next.CLAUDE_BOOTSTRAP_LOGIN;
+        delete next.CLAUDE_DEVICE_LOGIN_ON_START;
+        delete next.ANTHROPIC_API_KEY;
+        return next;
+      });
+      return;
+    }
     setConfig((current) => ({
       ...current,
-      OPENAI_API_KEY: value,
-      CODEX_API_KEY: ""
+      AI_AGENT: "codex",
+      CODEX_BOOTSTRAP_LOGIN: "true",
+      CODEX_DEVICE_LOGIN_ON_START: "true",
+      CODEX_API_KEY: "",
+      OPENAI_API_KEY: ""
     }));
-    setCodexCheck(null);
+    setIntegrationCheck(null);
     setErrors((current) => {
       const next = { ...current };
+      delete next.AI_AGENT;
       delete next.CODEX_API_KEY;
       delete next.OPENAI_API_KEY;
+      delete next.CODEX_BOOTSTRAP_LOGIN;
+      delete next.CODEX_DEVICE_LOGIN_ON_START;
+      delete next.CLAUDE_BOOTSTRAP_LOGIN;
+      delete next.CLAUDE_DEVICE_LOGIN_ON_START;
+      delete next.ANTHROPIC_API_KEY;
+      return next;
+    });
+  };
+
+  const updateClaudeAuthMode = (mode: string) => {
+    setConfig((current) => {
+      if (mode === "persisted") {
+        return {
+          ...current,
+          CLAUDE_BOOTSTRAP_LOGIN: "false",
+          CLAUDE_DEVICE_LOGIN_ON_START: "false",
+          ANTHROPIC_API_KEY: ""
+        };
+      }
+      return {
+        ...current,
+        CLAUDE_BOOTSTRAP_LOGIN: "true",
+        CLAUDE_DEVICE_LOGIN_ON_START: "true",
+        ANTHROPIC_API_KEY: ""
+      };
+    });
+    setIntegrationCheck(null);
+    setErrors((current) => {
+      const next = { ...current };
+      delete next.CLAUDE_BOOTSTRAP_LOGIN;
+      delete next.CLAUDE_DEVICE_LOGIN_ON_START;
+      delete next.ANTHROPIC_API_KEY;
       return next;
     });
   };
@@ -291,12 +366,14 @@ function SetupWizardApp() {
       await apiPost("/api/docker/build", {});
 
       setActivity((current) => [...current, "Starting the PRonto service container."]);
+      setHasLaunchedThisSession(true);
       await apiPost("/api/docker/run", {});
 
       const latestStatus = await apiGet<StatusResponse>("/api/status");
       setStatus(latestStatus);
       if (latestStatus.docker.container.running) {
         setIsNavigationLocked(true);
+        setStepIndex(runStepIndex);
       }
       setActivity((current) => [...current, "Container started"]);
     } catch (error) {
@@ -312,6 +389,7 @@ function SetupWizardApp() {
       await apiPost("/api/docker/stop", {});
       const latestStatus = await apiGet<StatusResponse>("/api/status");
       setStatus(latestStatus);
+      setHasLaunchedThisSession(false);
       setIsNavigationLocked(false);
       setActivity((current) => [...current, "Container stopped"]);
     } catch (error) {
@@ -455,15 +533,15 @@ function SetupWizardApp() {
     }
   };
 
-  const runCodexCheck = async () => {
-    setIsCheckingCodex(true);
+  const runIntegrationCheck = async () => {
+    setIsCheckingIntegration(true);
     try {
-      setCodexCheck(await apiPost<ReadinessCheckResponse>("/api/checks/codex-readiness", { config }));
+      setIntegrationCheck(await apiPost<ReadinessCheckResponse>("/api/checks/codex-readiness", { config }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
-      setCodexCheck({ ok: false, checks: [{ command: "codex readiness", ok: false, output: message }] });
+      setIntegrationCheck({ ok: false, checks: [{ command: "integration readiness", ok: false, output: message }] });
     } finally {
-      setIsCheckingCodex(false);
+      setIsCheckingIntegration(false);
     }
   };
 
@@ -549,22 +627,31 @@ function SetupWizardApp() {
     return "The GitHub check failed. Review the token and network access, then try again.";
   }, [gitHubCheck]);
 
-  const codexErrorHelp = useMemo(() => {
-    const output = codexCheck?.checks?.[0]?.output?.toLowerCase() || "";
-    if (!output || codexCheck?.ok) {
+  const integrationErrorHelp = useMemo(() => {
+    const output = integrationCheck?.checks?.[0]?.output?.toLowerCase() || "";
+    if (!output || integrationCheck?.ok) {
       return "";
     }
+    if (selectedAiAgent === "claude") {
+      if (output.includes("provide anthropic_api_key when ai_agent is set to claude")) {
+        return "This response came from an outdated Setup API process. Restart setup-api so Claude device-login checks are used.";
+      }
+      if (output.includes("enable claude_device_login_on_start")) {
+        return "Enable Claude device login on start, or select persisted login if a Claude session already exists in the shared volume.";
+      }
+      if (output.includes("device login")) {
+        return "Claude Code is set to device login. Launch the container and complete authentication when prompted.";
+      }
+      return "The Claude Code check failed. Review the selected integration settings and try again.";
+    }
     if (output.includes("codex_api_key or openai_api_key")) {
-      return "Add an API key, or turn on device login so PRonto has a Codex authentication path.";
+      return "Enable Codex device login on start, or choose persisted login if a Codex session already exists in the shared volume.";
     }
-    if (output.includes("401") || output.includes("403") || output.includes("invalid api key") || output.includes("incorrect api key")) {
-      return "OpenAI rejected the API key. Double-check that the key is valid and active.";
+    if (output.includes("device login")) {
+      return "Codex is set to device login. Launch the container and complete device authentication when prompted.";
     }
-    if (output.includes("fetch failed") || output.includes("network") || output.includes("failed to fetch")) {
-      return "Could not reach OpenAI. Check this machine's network access and try again.";
-    }
-    return "The Codex check failed. Review the selected auth mode and try again.";
-  }, [codexCheck]);
+    return "The Codex check failed. Use device login or persisted login and try again.";
+  }, [integrationCheck, selectedAiAgent]);
 
   const ngrokErrorHelp = useMemo(() => {
     const output = ngrokCheck?.checks?.find((check) => !check.ok)?.output?.toLowerCase() || "";
@@ -667,14 +754,15 @@ function SetupWizardApp() {
       : dockerPlatform === "linux"
         ? "On Linux, start your Docker daemon or service, then rerun the system check."
         : "On macOS, start Docker Desktop or Colima, then rerun the system check.";
+  const requiresGitHubAuth = config.REQUIRE_GITHUB_AUTH === "true";
   const stepTestPassed = {
     docker: Boolean(dockerCheck?.ok),
     jira: Boolean(jiraCheck?.ok),
-    github: Boolean(gitHubCheck?.ok),
-    codex: Boolean(codexCheck?.ok),
+    github: !requiresGitHubAuth || Boolean(gitHubCheck?.ok),
+    integration: Boolean(integrationCheck?.ok),
     ngrok: Boolean(ngrokCheck?.ok)
   } as const;
-  const currentStepRequiresPassingTest = ["docker", "jira", "github", "codex", "ngrok"].includes(currentStep.id);
+  const currentStepRequiresPassingTest = ["docker", "jira", "github", "integration", "ngrok"].includes(currentStep.id);
   const currentStepHasPassingTest = currentStep.id in stepTestPassed
     ? stepTestPassed[currentStep.id as keyof typeof stepTestPassed]
     : true;
@@ -685,7 +773,7 @@ function SetupWizardApp() {
       setActivity((current) => [...current, "Run the system check successfully before continuing."]);
       return;
     }
-    if (["jira", "github", "codex", "ngrok"].includes(currentStep.id)) {
+    if (["jira", "github", "integration", "ngrok"].includes(currentStep.id)) {
       const valid = await validateStep(currentStep.id);
       if (!valid) {
         return;
@@ -694,7 +782,7 @@ function SetupWizardApp() {
         const labels: Record<string, string> = {
           jira: "Test Jira Connection",
           github: "Test GitHub Access",
-          codex: "Test Codex Access",
+          integration: "Test Integration Access",
           ngrok: "Test Public Access"
         };
         setActivity((current) => [...current, `Run ${labels[currentStep.id]} successfully before continuing.`]);
@@ -748,7 +836,7 @@ function SetupWizardApp() {
           </div>
           <p className="lede">From ticket to PR. PRonto.</p>
           <p className="sidebar-copy">
-            A premium launch flow for connecting Jira, GitHub, and Codex, then moving from active ticket to pull request with less friction.
+            A premium launch flow for connecting Jira, GitHub, and your AI coding integration, then moving from active ticket to pull request with less friction.
           </p>
         </div>
 
@@ -798,7 +886,7 @@ function SetupWizardApp() {
                     <span>From Ticket to PR. PRonto.</span>
                   </h3>
                   <p className="muted">
-                    Connect Jira, GitHub, and Codex once. PRonto can generate the spec, prepare the repository, run the coding workflow, and open a pull request automatically when work begins.
+                    Connect Jira, GitHub, and your preferred AI coding integration once. PRonto can generate the spec, prepare the repository, run the coding workflow, and open a pull request automatically when work begins.
                   </p>
                   <div className="welcome-primary-action">
                     <div className="welcome-cta-row welcome-cta-row-prominent">
@@ -815,7 +903,7 @@ function SetupWizardApp() {
                         Learn More
                       </button>
                     </div>
-                    <p className="welcome-action-hint">Start with a quick system check, then connect Jira, GitHub, and Codex.</p>
+                    <p className="welcome-action-hint">Start with a quick system check, then connect Jira, GitHub, and your AI integration.</p>
                   </div>
                   <div className="welcome-actions">
                     <div className="welcome-chip">Less manual handoff</div>
@@ -1146,18 +1234,24 @@ function SetupWizardApp() {
             </StepLayout>
           )}
 
-          {currentStep.id === "codex" && (
+          {currentStep.id === "integration" && (
             <StepLayout
-              title="Authenticate Codex"
-              description="Choose whether PRonto should bootstrap Codex with an API key or rely on persisted device-login state."
+              title="Choose AI Integration"
+              description="Select which coding integration PRonto should run in automation, then configure that integration's authentication."
               asideContent={
                 <>
-                  <GuideChecklist title="Choose one path" items={["Fastest path: API key bootstrap", "Alternative path: persisted or device login"]} />
+                  <GuideChecklist
+                    title="Integration options"
+                    items={[
+                      "Codex: device login or persisted login",
+                      "Claude Code: device login or persisted login"
+                    ]}
+                  />
                   <FieldGuide
                     items={[
-                      ["API key", "Best for a fully automated launch with no interactive login step."],
-                      ["Device login", "Best if you do not want to store an API key in the project env file."],
-                      ["Persisted login", "Reuse an existing Codex session stored in the shared codex-state volume."]
+                      ["Integration", "Choose Codex or Claude Code for workflow implementation."],
+                      ["Codex auth", "Device login (recommended) or persisted login session."],
+                      ["Claude auth", "Device login (recommended) or persisted login session."]
                     ]}
                   />
                 </>
@@ -1165,56 +1259,97 @@ function SetupWizardApp() {
             >
               <label className="field">
                 <span>
-                  Authentication method
+                  AI integration
                   <em className="field-required"> *</em>
                 </span>
-                <select value={codexAuthMode} onChange={(event) => updateCodexAuthMode(event.target.value)}>
-                  <option value="api-key">API key</option>
-                  <option value="device">Device login</option>
-                  <option value="persisted">Use existing persisted login</option>
+                <select value={selectedAiAgent} onChange={(event) => updateAiAgent(event.target.value)}>
+                  <option value="codex">Codex</option>
+                  <option value="claude">Claude Code</option>
                 </select>
               </label>
-              {codexAuthMode === "api-key" ? (
-                <Field
-                  label="OpenAI API key"
-                  required
-                  value={codexApiKeyValue}
-                  onChange={updateCodexApiKey}
-                  error={errors.CODEX_API_KEY || errors.OPENAI_API_KEY}
-                  secret
-                />
+
+              {selectedAiAgent === "codex" ? (
+                <>
+                  <label className="field">
+                    <span>
+                      Codex authentication method
+                      <em className="field-required"> *</em>
+                    </span>
+                    <select value={codexAuthMode} onChange={(event) => updateCodexAuthMode(event.target.value)}>
+                      <option value="device">Device login</option>
+                      <option value="persisted">Use existing persisted login</option>
+                    </select>
+                  </label>
+                  {codexAuthMode === "device" ? (
+                    <div className="guide-section guide-link-card">
+                      <h4>What happens next</h4>
+                      <p className="muted">PRonto will trigger Codex device authentication when the container starts, so you can complete login interactively.</p>
+                    </div>
+                  ) : null}
+                  {codexAuthMode === "persisted" ? (
+                    <div className="guide-section guide-link-card">
+                      <h4>What happens next</h4>
+                      <p className="muted">PRonto will reuse the Codex session already stored in the shared container volume and skip bootstrap login.</p>
+                    </div>
+                  ) : null}
+                  <details className="guide-section codex-advanced">
+                    <summary>Advanced settings</summary>
+                    <Field
+                      label="Codex exec args"
+                      optional
+                      value={config.CODEX_EXEC_ARGS}
+                      onChange={(value) => updateField("CODEX_EXEC_ARGS", value)}
+                      error={errors.CODEX_EXEC_ARGS}
+                    />
+                  </details>
+                </>
               ) : null}
-              {codexAuthMode === "device" ? (
-                <div className="guide-section guide-link-card">
-                  <h4>What happens next</h4>
-                  <p className="muted">PRonto will trigger Codex device authentication when the container starts, so you can complete login interactively.</p>
-                </div>
+
+              {selectedAiAgent === "claude" ? (
+                <>
+                  <label className="field">
+                    <span>
+                      Claude authentication method
+                      <em className="field-required"> *</em>
+                    </span>
+                    <select value={claudeAuthMode} onChange={(event) => updateClaudeAuthMode(event.target.value)}>
+                      <option value="device">Device login</option>
+                      <option value="persisted">Use existing persisted login</option>
+                    </select>
+                  </label>
+                  {claudeAuthMode === "device" ? (
+                    <div className="guide-section guide-link-card">
+                      <h4>What happens next</h4>
+                      <p className="muted">PRonto will trigger Claude Code device authentication when the container starts, so you can complete login interactively.</p>
+                    </div>
+                  ) : null}
+                  {claudeAuthMode === "persisted" ? (
+                    <div className="guide-section guide-link-card">
+                      <h4>What happens next</h4>
+                      <p className="muted">PRonto will reuse the Claude Code session already stored in the shared container volume and skip bootstrap login.</p>
+                    </div>
+                  ) : null}
+                  <details className="guide-section codex-advanced">
+                    <summary>Advanced settings</summary>
+                    <Field
+                      label="Claude exec args"
+                      optional
+                      value={config.CLAUDE_EXEC_ARGS}
+                      onChange={(value) => updateField("CLAUDE_EXEC_ARGS", value)}
+                      error={errors.CLAUDE_EXEC_ARGS}
+                    />
+                  </details>
+                </>
               ) : null}
-              {codexAuthMode === "persisted" ? (
-                <div className="guide-section guide-link-card">
-                  <h4>What happens next</h4>
-                  <p className="muted">PRonto will reuse the Codex session already stored in the shared container volume and skip bootstrap login.</p>
-                </div>
-              ) : null}
-              <details className="guide-section codex-advanced">
-                <summary>Advanced settings</summary>
-                <Field
-                  label="Codex exec args"
-                  optional
-                  value={config.CODEX_EXEC_ARGS}
-                  onChange={(value) => updateField("CODEX_EXEC_ARGS", value)}
-                  error={errors.CODEX_EXEC_ARGS}
-                />
-              </details>
               <ConnectionTestPanel
-                buttonClassName={`primary github-check-button ${codexCheck ? (codexCheck.ok ? "is-pass" : "is-fail") : ""}`}
-                buttonLabel={isCheckingCodex ? "Testing Codex..." : "Test Codex Access"}
-                onClick={() => void runCodexCheck()}
-                disabled={isCheckingCodex}
-                readyLabel="✓ Codex ready"
-                resultTitle="Codex test result"
-                result={codexCheck}
-                errorHelp={codexErrorHelp}
+                buttonClassName={`primary github-check-button ${integrationCheck ? (integrationCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                buttonLabel={isCheckingIntegration ? `Testing ${integrationDisplayLabel}...` : `Test ${integrationDisplayLabel} Access`}
+                onClick={() => void runIntegrationCheck()}
+                disabled={isCheckingIntegration}
+                readyLabel={`✓ ${integrationDisplayLabel} ready`}
+                resultTitle="Integration test result"
+                result={integrationCheck}
+                errorHelp={integrationErrorHelp}
               />
             </StepLayout>
           )}

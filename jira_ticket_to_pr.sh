@@ -20,6 +20,11 @@ TARGET_REPO_SLUG=""
 TARGET_REPO_CLONE_URL=""
 CODEX_EXEC_ARGS="${CODEX_EXEC_ARGS:---full-auto}"
 CLAUDE_EXEC_ARGS="${CLAUDE_EXEC_ARGS:---allowedTools Bash,Edit,Write,Read}"
+if [[ "${AI_AGENT}" == "claude" ]]; then
+  AI_AGENT_LABEL="Claude Code"
+else
+  AI_AGENT_LABEL="Codex CLI"
+fi
 
 extract_repo_from_spec() {
   local spec_path="$1"
@@ -162,6 +167,35 @@ fi
 ISSUE_SUMMARY_LINE="$(head -n 1 "${TARGET_DIR}/${SPEC_FILE}")"
 PR_SUMMARY="${ISSUE_SUMMARY_LINE#\# ${JIRA_KEY}: }"
 PR_TITLE="${JIRA_KEY}: ${PR_SUMMARY}"
+PR_BODY_FILE="${TARGET_DIR}/${SPEC_DIR}/${JIRA_KEY}-pr-body.md"
+
+cat "${TARGET_DIR}/${SPEC_FILE}" > "${PR_BODY_FILE}"
+
+# Normalize legacy implementation-instruction wording so PR text matches the selected agent.
+if [[ "${AI_AGENT}" == "claude" ]]; then
+  sed -i.bak \
+    -e 's/## Implementation instructions for Codex.*/## Implementation instructions for Claude Code (repo conventions + reference KEY)./g' \
+    -e 's/## Implementation instructions$/## Implementation instructions for Claude Code (repo conventions + reference KEY)./g' \
+    -e 's/for Codex/for Claude Code/g' \
+    "${PR_BODY_FILE}" || true
+else
+  sed -i.bak \
+    -e 's/## Implementation instructions for Claude Code.*/## Implementation instructions for Codex (repo conventions + reference KEY)./g' \
+    -e 's/## Implementation instructions$/## Implementation instructions for Codex (repo conventions + reference KEY)./g' \
+    -e 's/for Claude Code/for Codex/g' \
+    "${PR_BODY_FILE}" || true
+fi
+rm -f "${PR_BODY_FILE}.bak"
+
+cat >> "${PR_BODY_FILE}" <<EOF
+
+---
+
+## Automation Metadata
+- AI Agent: ${AI_AGENT_LABEL}
+- Issue Key: ${JIRA_KEY}
+- Base Branch: ${BASE_BRANCH}
+EOF
 
 echo "Creating PR against ${BASE_BRANCH}"
 PR_CREATE_OUTPUT=""
@@ -169,10 +203,14 @@ if [[ -n "${TARGET_REPO_SLUG}" ]]; then
   if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
     --repo "${TARGET_REPO_SLUG}" \
     --title "${PR_TITLE}" \
-    --body-file "${SPEC_FILE}" \
+    --body-file "${PR_BODY_FILE}" \
     --base "${BASE_BRANCH}" 2>&1)"; then
     if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
-      echo "PR already exists for ${BRANCH_NAME}. Reusing existing PR."
+      echo "PR already exists for ${BRANCH_NAME}. Updating title/body and reusing existing PR."
+      (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
+        --repo "${TARGET_REPO_SLUG}" \
+        --title "${PR_TITLE}" \
+        --body-file "${PR_BODY_FILE}" >/dev/null 2>&1 || true)
       EXISTING_PR_URL="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" --repo "${TARGET_REPO_SLUG}" --json url --jq .url 2>/dev/null || true)"
       if [[ -z "${EXISTING_PR_URL}" ]]; then
         echo "${PR_CREATE_OUTPUT}" >&2
@@ -189,10 +227,13 @@ if [[ -n "${TARGET_REPO_SLUG}" ]]; then
 else
   if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
     --title "${PR_TITLE}" \
-    --body-file "${SPEC_FILE}" \
+    --body-file "${PR_BODY_FILE}" \
     --base "${BASE_BRANCH}" 2>&1)"; then
     if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
-      echo "PR already exists for ${BRANCH_NAME}. Reusing existing PR."
+      echo "PR already exists for ${BRANCH_NAME}. Updating title/body and reusing existing PR."
+      (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
+        --title "${PR_TITLE}" \
+        --body-file "${PR_BODY_FILE}" >/dev/null 2>&1 || true)
       EXISTING_PR_URL="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" --json url --jq .url 2>/dev/null || true)"
       if [[ -z "${EXISTING_PR_URL}" ]]; then
         echo "${PR_CREATE_OUTPUT}" >&2

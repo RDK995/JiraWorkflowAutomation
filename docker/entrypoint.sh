@@ -11,6 +11,16 @@ if [[ -e "/root/.codex" && ! -L "/root/.codex" ]]; then
 fi
 ln -sfn "${CODEX_STATE_DIR}" /root/.codex
 
+# Persist Claude auth/session across container restarts when mounted as a volume.
+CLAUDE_STATE_DIR="${CLAUDE_STATE_DIR:-/data/claude}"
+mkdir -p "${CLAUDE_STATE_DIR}"
+
+if [[ -e "/root/.claude" && ! -L "/root/.claude" ]]; then
+  cp -R /root/.claude/. "${CLAUDE_STATE_DIR}/" 2>/dev/null || true
+  rm -rf /root/.claude
+fi
+ln -sfn "${CLAUDE_STATE_DIR}" /root/.claude
+
 if [[ -n "${CODEX_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
   # Keep a single source of truth in .env while satisfying tools that expect OPENAI_API_KEY.
   export OPENAI_API_KEY="${CODEX_API_KEY}"
@@ -33,8 +43,16 @@ if [[ -n "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
   export GITHUB_TOKEN="${GH_TOKEN}"
 fi
 
+if [[ -z "${GIT_AUTHOR_NAME:-}" || "${GIT_AUTHOR_NAME}" == "Codex Bot" || "${GIT_AUTHOR_NAME}" == "Claude Bot" || "${GIT_AUTHOR_NAME}" == "AI Bot" || "${GIT_AUTHOR_NAME}" == "PRonto Bot" ]]; then
+  GIT_AUTHOR_NAME="PRonto"
+fi
+
 if [[ -n "${GIT_AUTHOR_NAME:-}" ]]; then
   git config --global user.name "${GIT_AUTHOR_NAME}"
+fi
+
+if [[ -z "${GIT_AUTHOR_EMAIL:-}" || "${GIT_AUTHOR_EMAIL}" == "codex-bot@example.com" || "${GIT_AUTHOR_EMAIL}" == "claude-bot@example.com" || "${GIT_AUTHOR_EMAIL}" == "ai-bot@example.com" || "${GIT_AUTHOR_EMAIL}" == "pronto-bot@example.com" ]]; then
+  GIT_AUTHOR_EMAIL="pronto-bot@example.com"
 fi
 
 if [[ -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
@@ -52,13 +70,46 @@ elif [[ "${REQUIRE_GITHUB_AUTH:-false}" == "true" ]]; then
   exit 1
 fi
 
-# Claude Code auth validation (API key only — no device login needed)
-if [[ "${AI_AGENT:-codex}" == "claude" ]]; then
-  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-    echo "AI_AGENT=claude but ANTHROPIC_API_KEY is not set." >&2
-    exit 1
+claude_is_logged_in() {
+  if claude auth status >/dev/null 2>&1; then
+    return 0
   fi
-  echo "Claude Code configured with API key."
+  if claude login status >/dev/null 2>&1; then
+    return 0
+  fi
+  if claude whoami >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+claude_start_device_login() {
+  if claude auth login; then
+    return 0
+  fi
+  if claude login; then
+    return 0
+  fi
+  return 1
+}
+
+if [[ "${AI_AGENT:-codex}" == "claude" ]]; then
+  if [[ "${CLAUDE_BOOTSTRAP_LOGIN:-false}" == "true" ]]; then
+    if claude_is_logged_in; then
+      echo "Claude Code login already available."
+    elif [[ "${CLAUDE_DEVICE_LOGIN_ON_START:-false}" == "true" ]]; then
+      echo "Starting interactive Claude Code device auth..."
+      if ! claude_start_device_login; then
+        echo "Claude Code login failed. Complete login manually in the container, or set CLAUDE_BOOTSTRAP_LOGIN=false to use persisted login only." >&2
+        exit 1
+      fi
+    else
+      echo "Claude Code is not logged in. Set CLAUDE_DEVICE_LOGIN_ON_START=true or set CLAUDE_BOOTSTRAP_LOGIN=false for persisted login mode." >&2
+      exit 1
+    fi
+  else
+    echo "Claude Code bootstrap login disabled; expecting persisted session."
+  fi
 fi
 
 if [[ "${CODEX_BOOTSTRAP_LOGIN:-false}" == "true" ]]; then

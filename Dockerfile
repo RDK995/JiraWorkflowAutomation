@@ -28,12 +28,15 @@ ENV PORT=3000 \
     OPENAI_API_KEY= \
     GITHUB_TOKEN= \
     GH_TOKEN= \
-    GIT_AUTHOR_NAME="Codex Bot" \
-    GIT_AUTHOR_EMAIL=codex-bot@example.com \
+    GIT_AUTHOR_NAME=PRonto \
+    GIT_AUTHOR_EMAIL=pronto-bot@example.com \
     REQUIRE_GITHUB_AUTH=false \
-    CODEX_BOOTSTRAP_LOGIN=false \
-    CODEX_DEVICE_LOGIN_ON_START=false \
+    CODEX_BOOTSTRAP_LOGIN=true \
+    CODEX_DEVICE_LOGIN_ON_START=true \
     CODEX_STATE_DIR=/data/codex \
+    CLAUDE_BOOTSTRAP_LOGIN=true \
+    CLAUDE_DEVICE_LOGIN_ON_START=true \
+    CLAUDE_STATE_DIR=/data/claude \
     WORKFLOW_BASE_BRANCH=main \
     WORKFLOW_SCRIPT=./jira_ticket_to_pr.sh \
     WORKFLOW_TIMEOUT_SECONDS=5400 \
@@ -47,7 +50,7 @@ ENV PORT=3000 \
     NGROK_PORT=3000
 
 EXPOSE 3000
-VOLUME ["/data/codex"]
+VOLUME ["/data/codex", "/data/claude"]
 
 ENTRYPOINT ["./docker/entrypoint.sh"]
 CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT} src.app:app"]
