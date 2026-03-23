@@ -742,6 +742,112 @@ a:hover {
   background: rgba(79, 125, 255, 0.09);
 }
 
+.integration-next-action {
+  margin-bottom: 0.25rem;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(135, 208, 162, 0.5);
+  background: linear-gradient(180deg, rgba(55, 132, 95, 0.18), rgba(31, 78, 56, 0.12));
+}
+
+.integration-next-action h4 {
+  margin: 0 0 0.32rem;
+  color: #bff3d2;
+}
+
+.integration-next-action p {
+  margin: 0;
+  color: #def7e8;
+}
+
+.login-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.62rem;
+  align-items: center;
+}
+
+.integration-login-button {
+  min-width: 11rem;
+}
+
+.integration-login-link {
+  min-width: 10rem;
+  text-align: center;
+}
+
+.integration-login-cancel {
+  min-width: 7rem;
+}
+
+.login-cta-status {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.login-cta-error {
+  margin: 0;
+  color: #ff9aac;
+  font-size: 0.92rem;
+}
+
+.login-cta-log {
+  margin: 0;
+  padding: 0.72rem;
+  max-height: 12rem;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(145, 170, 255, 0.24);
+  background: rgba(8, 16, 40, 0.68);
+  color: var(--text-body);
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.auth-code-submit-row {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.auth-code-field {
+  display: grid;
+  gap: 0.36rem;
+}
+
+.auth-code-field span {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+
+.auth-code-field input {
+  width: 100%;
+  border: 1px solid rgba(145, 170, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(8, 16, 40, 0.45);
+  color: var(--text-body);
+  padding: 0.56rem 0.72rem;
+}
+
+.auth-code-field.needs-input span {
+  color: #d8ffe9;
+  font-weight: 700;
+}
+
+.auth-code-field.needs-input input {
+  border-color: rgba(137, 234, 181, 0.95);
+  box-shadow: 0 0 0 2px rgba(137, 234, 181, 0.7), 0 0 0 5px rgba(137, 234, 181, 0.22);
+}
+
+.auth-code-submit-button {
+  justify-self: start;
+}
+
+.is-next-action {
+  box-shadow: 0 0 0 2px rgba(137, 234, 181, 0.72), 0 0 0 5px rgba(137, 234, 181, 0.2);
+  border-color: rgba(137, 234, 181, 0.9) !important;
+}
+
 .guide-error-help {
   background: rgba(242, 142, 155, 0.09);
 }
@@ -971,6 +1077,18 @@ button.secondary:hover:not(:disabled) {
   background: rgba(79, 125, 255, 0.08);
 }
 
+button.danger {
+  color: #fff3f5;
+  font-weight: 650;
+  background: linear-gradient(180deg, #de5b72 0%, #bf4258 100%);
+  border: 1px solid rgba(225, 120, 141, 0.48);
+  box-shadow: 0 13px 26px rgba(191, 66, 88, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+button.danger:hover:not(:disabled) {
+  box-shadow: 0 18px 34px rgba(191, 66, 88, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
 a.button-link {
   display: inline-flex;
   align-items: center;
@@ -1018,6 +1136,12 @@ button:disabled {
   box-shadow: 0 13px 26px rgba(62, 165, 108, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
+.launch-button.is-disabled {
+  background: linear-gradient(180deg, #7381a9 0%, #627093 100%);
+  border: 1px solid rgba(174, 188, 223, 0.28);
+  box-shadow: none;
+}
+
 .docker-context-field {
   min-width: min(100%, 22rem);
 }
@@ -1042,6 +1166,24 @@ button:disabled {
 
 .run-console-brand h3 {
   margin: 0;
+}
+
+.run-grid .step-main-card {
+  position: relative;
+}
+
+.run-agent-badge {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  padding: 0.36rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(145, 170, 255, 0.35);
+  background: rgba(79, 125, 255, 0.14);
+  color: var(--text-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .run-console-mark {

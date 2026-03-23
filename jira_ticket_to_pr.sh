@@ -26,6 +26,21 @@ else
   AI_AGENT_LABEL="Codex CLI"
 fi
 
+claude_is_logged_in() {
+  (cd "${TARGET_DIR}" && claude auth status >/dev/null 2>&1) \
+    || (cd "${TARGET_DIR}" && claude login status >/dev/null 2>&1) \
+    || (cd "${TARGET_DIR}" && claude whoami >/dev/null 2>&1)
+}
+
+claude_start_device_login() {
+  (cd "${TARGET_DIR}" && claude auth login) \
+    || (cd "${TARGET_DIR}" && claude login)
+}
+
+has_interactive_tty() {
+  [[ -t 0 && -t 1 ]]
+}
+
 extract_repo_from_spec() {
   local spec_path="$1"
   local in_section=0
@@ -146,14 +161,62 @@ Commit your changes with a commit message that includes "${JIRA_KEY}".
 EOF
 )
 
+WORKFLOW_OUTPUT_FILE="$(mktemp)"
+
 if [[ "${AI_AGENT}" == "claude" ]]; then
+  claude_bootstrap_login="${CLAUDE_BOOTSTRAP_LOGIN:-true}"
+  claude_device_login_on_start="${CLAUDE_DEVICE_LOGIN_ON_START:-true}"
+  if ! claude_is_logged_in; then
+    if [[ "${claude_bootstrap_login}" == "true" && "${claude_device_login_on_start}" == "true" ]]; then
+      if ! has_interactive_tty; then
+        echo "Claude login is required, but this workflow is running non-interactively." >&2
+        echo "Complete login first with: docker exec -it jira-automation claude auth login" >&2
+        exit 1
+      fi
+      echo "Claude login not detected. Starting Claude device login now..."
+      if ! claude_start_device_login; then
+        echo "Claude device login failed. Run login in the container and retry." >&2
+        exit 1
+      fi
+      if ! claude_is_logged_in; then
+        echo "Claude login is still unavailable after device login completed." >&2
+        exit 1
+      fi
+    else
+      echo "Claude login is not available." >&2
+      echo "Enable CLAUDE_DEVICE_LOGIN_ON_START with CLAUDE_BOOTSTRAP_LOGIN=true, or use persisted login mode." >&2
+      exit 1
+    fi
+  fi
   echo "Running Claude Code implementation workflow"
-  (cd "${TARGET_DIR}" && claude -p "${AI_PROMPT}" ${CLAUDE_EXEC_ARGS} --output-format text)
+  (cd "${TARGET_DIR}" && claude -p "${AI_PROMPT}" ${CLAUDE_EXEC_ARGS} --output-format text) | tee "${WORKFLOW_OUTPUT_FILE}"
 elif [[ "${AI_AGENT}" == "codex" ]]; then
   echo "Running Codex implementation workflow"
-  (cd "${TARGET_DIR}" && codex exec ${CODEX_EXEC_ARGS} "${AI_PROMPT}")
+  (cd "${TARGET_DIR}" && codex exec ${CODEX_EXEC_ARGS} "${AI_PROMPT}") | tee "${WORKFLOW_OUTPUT_FILE}"
 else
   echo "Unknown AI_AGENT: ${AI_AGENT}. Supported values: codex, claude" >&2
+  exit 1
+fi
+
+if [[ "${AI_AGENT}" == "codex" ]] && rg -q "No permissions to create a new namespace|bwrap: No permissions to create a new namespace" "${WORKFLOW_OUTPUT_FILE}" 2>/dev/null; then
+  rm -f "${WORKFLOW_OUTPUT_FILE}"
+  echo "Codex failed due container sandbox constraints (bwrap user namespaces unavailable)." >&2
+  echo "Set CODEX_EXEC_ARGS to include '--sandbox danger-full-access' for this environment and rerun." >&2
+  exit 1
+fi
+
+if [[ "${AI_AGENT}" == "claude" ]] && rg -q "No permissions to create a new namespace|bwrap: No permissions to create a new namespace" "${WORKFLOW_OUTPUT_FILE}" 2>/dev/null; then
+  rm -f "${WORKFLOW_OUTPUT_FILE}"
+  echo "Claude failed due container sandbox constraints (bwrap user namespaces unavailable)." >&2
+  echo "Adjust Claude execution args for this environment and rerun." >&2
+  exit 1
+fi
+
+rm -f "${WORKFLOW_OUTPUT_FILE}"
+
+if [[ -z "$(git -C "${TARGET_DIR}" log --oneline "origin/${BASE_BRANCH}..HEAD" 2>/dev/null)" ]]; then
+  echo "AI workflow completed without producing commits on branch ${BRANCH_NAME}. Aborting before push/PR." >&2
+  echo "Confirm agent execution succeeded and created at least one commit, then rerun." >&2
   exit 1
 fi
 

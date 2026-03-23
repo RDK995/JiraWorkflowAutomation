@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { validateConfig } from "./config.js";
 import { frontendDistPath } from "./paths.js";
-import { buildImage, getContainerLogs, listDockerContexts, openDockerDesktop, runContainer, startColima, stopContainer, switchDockerContext } from "./services/docker-service.js";
+import { buildImage, cancelClaudeLoginSession, cancelCodexLoginSession, getClaudeLoginSessionStatus, getCodexLoginSessionStatus, getContainerLogs, listDockerContexts, openDockerDesktop, runContainer, startClaudeLoginSession, startCodexLoginSession, startColima, stopContainer, submitClaudeLoginCode, switchDockerContext } from "./services/docker-service.js";
 import { readCurrentConfig, saveConfig } from "./services/env-file.js";
 import { getCodexReadinessStatus, getDockerReadinessStatus, getFullStatus, getGitHubReadinessStatus, getHealthStatus, getJiraReadinessStatus, getNgrokReadinessStatus, getPrerequisiteChecks } from "./services/status-service.js";
 
@@ -82,6 +82,13 @@ export function createRequestListener(deps = {}) {
     stopContainerImpl = stopContainer,
     runContainerImpl = runContainer,
     getContainerLogsImpl = getContainerLogs,
+    startClaudeLoginSessionImpl = startClaudeLoginSession,
+    getClaudeLoginSessionStatusImpl = getClaudeLoginSessionStatus,
+    cancelClaudeLoginSessionImpl = cancelClaudeLoginSession,
+    submitClaudeLoginCodeImpl = submitClaudeLoginCode,
+    startCodexLoginSessionImpl = startCodexLoginSession,
+    getCodexLoginSessionStatusImpl = getCodexLoginSessionStatus,
+    cancelCodexLoginSessionImpl = cancelCodexLoginSession,
     getHealthStatusImpl = getHealthStatus,
     serveStaticAssetImpl = serveStaticAsset
   } = deps;
@@ -143,7 +150,7 @@ export function createRequestListener(deps = {}) {
 
       if (request.method === "POST" && url.pathname === "/api/checks/codex-readiness") {
         const body = await readJsonBody(request);
-        sendJson(response, 200, await getCodexReadinessStatusImpl(body.config || body));
+        sendJson(response, 200, await getCodexReadinessStatusImpl(body.config || body, { traceId: body.traceId || "" }));
         return;
       }
 
@@ -198,6 +205,47 @@ export function createRequestListener(deps = {}) {
 
       if (request.method === "GET" && url.pathname === "/api/docker/health") {
         sendJson(response, 200, await getHealthStatusImpl());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/claude/login/start") {
+        console.info("[setup-api][http] POST /api/integrations/claude/login/start");
+        sendJson(response, 200, await startClaudeLoginSessionImpl());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/integrations/claude/login/status") {
+        sendJson(response, 200, await getClaudeLoginSessionStatusImpl());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/claude/login/cancel") {
+        console.info("[setup-api][http] POST /api/integrations/claude/login/cancel");
+        sendJson(response, 200, await cancelClaudeLoginSessionImpl());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/claude/login/submit-code") {
+        const body = await readJsonBody(request);
+        console.info(
+          `[setup-api][http] POST /api/integrations/claude/login/submit-code trace=${body.traceId || "none"} code_length=${String(body.code || "").trim().length}`
+        );
+        sendJson(response, 200, await submitClaudeLoginCodeImpl(body.code, body.traceId || ""));
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/codex/login/start") {
+        sendJson(response, 200, await startCodexLoginSessionImpl());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/integrations/codex/login/status") {
+        sendJson(response, 200, await getCodexLoginSessionStatusImpl());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/codex/login/cancel") {
+        sendJson(response, 200, await cancelCodexLoginSessionImpl());
         return;
       }
 

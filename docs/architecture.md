@@ -10,7 +10,7 @@ sequenceDiagram
     participant App as Flask Webhook App (Container)
     participant Script as jira_ticket_to_pr.sh
     participant Spec as jira_to_spec.py
-    participant Codex as Codex CLI
+    participant Agent as Selected AI Agent (Codex CLI or Claude Code)
     participant GitHub as GitHub
 
     Jira->>Ngrok: Issue transition webhook (To Do -> In Progress)
@@ -20,8 +20,8 @@ sequenceDiagram
     Script->>Spec: Generate .codex/<KEY>.md from Jira issue
     Spec->>Jira: GET /rest/api/3/issue/{KEY}
     Script->>GitHub: Clone target repo + create jira/<KEY> branch
-    Script->>Codex: codex exec --full-auto "<prompt>"
-    Codex->>GitHub: Commit/push changes
+    Script->>Agent: Run selected implementation workflow (AI_AGENT)
+    Agent->>GitHub: Commit/push changes
     Script->>GitHub: Create PR (gh pr create)
     Script->>App: Return output + PR URL
     App->>Jira: Add issue comment with success/failure
@@ -46,11 +46,14 @@ flowchart LR
         WF[jira_ticket_to_pr.sh]
         SpecPy[tools/jira/jira_to_spec.py]
         CodexCLI[Codex CLI]
+        ClaudeCLI[Claude Code CLI]
         GHCLI[GitHub CLI]
+        AgentSwitch{AI_AGENT}
     end
 
     subgraph Persistent[Persistent Storage]
         Vol[/Docker volume: /data/codex\n(Codex login/session state)/]
+        VolClaude[/Docker volume: /data/claude\n(Claude login/session state)/]
     end
 
     subgraph GitHubCloud[GitHub]
@@ -61,13 +64,17 @@ flowchart LR
     JWebhook --> NG --> Flask
     Flask --> WF
     WF --> SpecPy --> JIssue
-    WF --> CodexCLI
+    WF --> AgentSwitch
+    AgentSwitch --> CodexCLI
+    AgentSwitch --> ClaudeCLI
     WF --> GHCLI
     CodexCLI --> Repo
+    ClaudeCLI --> Repo
     GHCLI --> PR
     EP --> CodexCLI
+    EP --> ClaudeCLI
     EP --> GHCLI
     EP --> NG
     CodexCLI <--> Vol
+    ClaudeCLI <--> VolClaude
 ```
-

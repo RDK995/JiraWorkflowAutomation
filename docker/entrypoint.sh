@@ -83,26 +83,12 @@ claude_is_logged_in() {
   return 1
 }
 
-claude_start_device_login() {
-  if claude auth login; then
-    return 0
-  fi
-  if claude login; then
-    return 0
-  fi
-  return 1
-}
-
 if [[ "${AI_AGENT:-codex}" == "claude" ]]; then
   if [[ "${CLAUDE_BOOTSTRAP_LOGIN:-false}" == "true" ]]; then
     if claude_is_logged_in; then
       echo "Claude Code login already available."
     elif [[ "${CLAUDE_DEVICE_LOGIN_ON_START:-false}" == "true" ]]; then
-      echo "Starting interactive Claude Code device auth..."
-      if ! claude_start_device_login; then
-        echo "Claude Code login failed. Complete login manually in the container, or set CLAUDE_BOOTSTRAP_LOGIN=false to use persisted login only." >&2
-        exit 1
-      fi
+      echo "Claude Code device login is enabled and will run on-demand during workflow execution."
     else
       echo "Claude Code is not logged in. Set CLAUDE_DEVICE_LOGIN_ON_START=true or set CLAUDE_BOOTSTRAP_LOGIN=false for persisted login mode." >&2
       exit 1

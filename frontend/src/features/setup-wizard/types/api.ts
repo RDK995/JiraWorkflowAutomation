@@ -64,3 +64,27 @@ export type DockerContextResponse = {
   }>;
   output?: string;
 };
+
+export type ClaudeLoginSessionResponse = {
+  ok: boolean;
+  running?: boolean;
+  alreadyRunning?: boolean;
+  error?: string;
+  session: {
+    state: "idle" | "running" | "waiting_for_browser" | "verifying" | "success" | "failed" | "cancelled";
+    nextAction: "start_sign_in" | "open_sign_in" | "wait_for_verification" | "test_access" | "retry_sign_in";
+    startedAt: string | null;
+    finishedAt: string | null;
+    authUrl: string;
+    error: string;
+    logs: string[];
+  };
+};
+
+export type CodexLoginSessionResponse = ClaudeLoginSessionResponse;
+
+export type ClaudeLoginSubmitCodeResponse = {
+  ok: boolean;
+  error?: string;
+  session: ClaudeLoginSessionResponse["session"];
+};

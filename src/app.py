@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
@@ -32,7 +35,9 @@ JIRA_WEBHOOK_SECRET = env_clean("JIRA_WEBHOOK_SECRET", "")
 READY_STATUS = env_clean("READY_STATUS", "To Do")
 IN_PROGRESS_STATUS = env_clean("IN_PROGRESS_STATUS", "In Progress")
 IN_REVIEW_STATUS = env_clean("IN_REVIEW_STATUS", "In Review")
+DONE_STATUS = env_clean("DONE_STATUS", "Done")
 AI_AGENT = env_clean("AI_AGENT", "codex")
+GITHUB_WEBHOOK_SECRET = env_clean("GITHUB_WEBHOOK_SECRET", "")
 WORKFLOW_SCRIPT = env_clean("WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh")
 WORKFLOW_BASE_BRANCH = env_clean("WORKFLOW_BASE_BRANCH", "main")
 WORKFLOW_TIMEOUT_SECONDS = int(env_clean("WORKFLOW_TIMEOUT_SECONDS", "5400"))
@@ -56,6 +61,14 @@ def has_valid_secret(req: Any) -> bool:
     if not JIRA_WEBHOOK_SECRET:
         return True
     return req.headers.get("x-jira-webhook-secret") == JIRA_WEBHOOK_SECRET
+
+
+def has_valid_github_signature(req: Any, raw_body: bytes) -> bool:
+    if not GITHUB_WEBHOOK_SECRET:
+        return True
+    signature = req.headers.get("x-hub-signature-256", "")
+    expected = "sha256=" + hmac.new(GITHUB_WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
 
 
 def add_issue_comment(issue_key: str, comment_body: str) -> None:
@@ -148,6 +161,19 @@ def run_ai_workflow(issue_key: str) -> str:
 def extract_pr_url(text: str) -> str:
     match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+", text or "")
     return match.group(0) if match else ""
+
+
+def extract_issue_key_from_pull_request(payload: dict[str, Any]) -> str:
+    candidates = [
+        ((payload.get("head") or {}).get("ref") or ""),
+        (payload.get("title") or ""),
+        (payload.get("body") or ""),
+    ]
+    for text in candidates:
+        match = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", str(text))
+        if match:
+            return match.group(1)
+    return ""
 
 
 def run_automation_for_issue(issue_key: str) -> None:
@@ -251,6 +277,38 @@ def jira_transition() -> Any:
         return jsonify({"queued": True, "issueKey": issue_key}), 202
     except Exception as exc:
         app.logger.exception("Automation error: issue=%s", issue_key)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/webhooks/github-pr")
+def github_pr_webhook() -> Any:
+    raw_body = request.get_data(cache=False) or b""
+    try:
+        body = json.loads(raw_body.decode("utf-8") or "{}")
+    except Exception:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    if not has_valid_github_signature(request, raw_body):
+        return jsonify({"error": "Invalid GitHub webhook signature"}), 401
+
+    if request.headers.get("x-github-event") != "pull_request":
+        return jsonify({"skipped": True, "reason": "Unsupported GitHub event"}), 200
+
+    action = body.get("action")
+    pr = body.get("pull_request") or {}
+    if action != "closed" or not pr.get("merged"):
+        return jsonify({"skipped": True, "reason": "PR is not a merged close event"}), 200
+
+    issue_key = extract_issue_key_from_pull_request(pr)
+    if not issue_key:
+        return jsonify({"skipped": True, "reason": "No Jira issue key found in PR metadata"}), 200
+
+    try:
+        transition_issue_to_status(issue_key, DONE_STATUS)
+        app.logger.info("Issue transitioned from GitHub merge webhook: issue=%s target_status=%s", issue_key, DONE_STATUS)
+        return jsonify({"transitioned": True, "issueKey": issue_key, "status": DONE_STATUS}), 200
+    except Exception as exc:
+        app.logger.exception("GitHub merge webhook transition error: issue=%s", issue_key)
         return jsonify({"error": str(exc)}), 500
 
 

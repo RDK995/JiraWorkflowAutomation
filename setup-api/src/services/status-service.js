@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { normalizeConfig } from "../config.js";
 import { readCurrentConfig } from "./env-file.js";
-import { dockerAvailable, getContainerLogs, getDockerStatus, runDockerReadinessCheck } from "./docker-service.js";
+import { checkClaudeLoginState, checkCodexLoginState, dockerAvailable, getContainerLogs, getDockerStatus, runDockerReadinessCheck } from "./docker-service.js";
 
 export function createStatusService({
   readCurrentConfigImpl = readCurrentConfig,
@@ -10,6 +10,8 @@ export function createStatusService({
   getContainerLogsImpl = getContainerLogs,
   getDockerStatusImpl = getDockerStatus,
   runDockerReadinessCheckImpl = runDockerReadinessCheck,
+  checkClaudeLoginStateImpl = checkClaudeLoginState,
+  checkCodexLoginStateImpl = checkCodexLoginState,
   fetchImpl = fetch
 } = {}) {
   return {
@@ -160,35 +162,52 @@ export function createStatusService({
       }
     },
 
-    async getCodexReadinessStatus(configInput = {}) {
+    async getCodexReadinessStatus(configInput = {}, context = {}) {
       const config = normalizeConfig(configInput);
       const aiAgent = config.AI_AGENT || "codex";
-
-      if (aiAgent === "claude") {
+      const traceId = context.traceId || "";
+      const startedAt = Date.now();
+      try {
+        if (aiAgent === "claude") {
         const bootstrapLogin = config.CLAUDE_BOOTSTRAP_LOGIN === "true";
         const deviceLogin = config.CLAUDE_DEVICE_LOGIN_ON_START === "true";
 
-        if (bootstrapLogin && deviceLogin) {
+        if (!bootstrapLogin) {
+          const claudeSession = await checkClaudeLoginStateImpl(traceId);
           return {
-            ok: true,
+            ok: claudeSession.ok,
             checks: [
               {
-                command: "claude login mode",
-                ok: true,
-                output: "Device login is enabled. Complete Claude Code authentication in the running container if prompted."
+                command: "claude persisted session",
+                ok: claudeSession.ok,
+                output: claudeSession.output
               }
             ]
           };
         }
 
-        if (!bootstrapLogin) {
+        if (deviceLogin) {
+          const claudeSession = await checkClaudeLoginStateImpl(traceId);
+          if (claudeSession.ok) {
+            return {
+              ok: true,
+              checks: [
+                {
+                  command: "claude login session",
+                  ok: true,
+                  output: claudeSession.output
+                }
+              ]
+            };
+          }
+
           return {
-            ok: true,
+            ok: false,
             checks: [
               {
                 command: "claude login mode",
-                ok: true,
-                output: "Persisted login mode selected. Verify the jira-automation container has an existing Claude Code session before launch."
+                ok: false,
+                output: claudeSession.output
               }
             ]
           };
@@ -206,7 +225,7 @@ export function createStatusService({
         };
       }
 
-      if (aiAgent !== "codex") {
+        if (aiAgent !== "codex") {
         return {
           ok: false,
           checks: [
@@ -219,11 +238,11 @@ export function createStatusService({
         };
       }
 
-      const apiKey = config.CODEX_API_KEY || config.OPENAI_API_KEY;
-      const bootstrapLogin = config.CODEX_BOOTSTRAP_LOGIN === "true";
-      const deviceLogin = config.CODEX_DEVICE_LOGIN_ON_START === "true";
+        const apiKey = config.CODEX_API_KEY || config.OPENAI_API_KEY;
+        const bootstrapLogin = config.CODEX_BOOTSTRAP_LOGIN === "true";
+        const deviceLogin = config.CODEX_DEVICE_LOGIN_ON_START === "true";
 
-      if (apiKey) {
+        if (apiKey) {
         try {
           const response = await fetchImpl("https://api.openai.com/v1/models", {
             headers: {
@@ -270,20 +289,34 @@ export function createStatusService({
         }
       }
 
-      if (deviceLogin) {
+        if (deviceLogin) {
+        const codexSession = await checkCodexLoginStateImpl(traceId);
+        if (codexSession.ok) {
+          return {
+            ok: true,
+            checks: [
+              {
+                command: "codex login session",
+                ok: true,
+                output: codexSession.output
+              }
+            ]
+          };
+        }
+
         return {
-          ok: true,
+          ok: false,
           checks: [
             {
               command: "codex login mode",
-              ok: true,
-              output: "Device login is enabled. Complete login in the running container if prompted."
+              ok: false,
+              output: codexSession.output
             }
           ]
         };
       }
 
-      if (!bootstrapLogin) {
+        if (!bootstrapLogin) {
         return {
           ok: true,
           checks: [
@@ -296,16 +329,19 @@ export function createStatusService({
         };
       }
 
-      return {
-        ok: false,
-        checks: [
-          {
-            command: "codex credentials",
-            ok: false,
-            output: "Provide CODEX_API_KEY or OPENAI_API_KEY, or enable device login on start."
-          }
-        ]
-      };
+        return {
+          ok: false,
+          checks: [
+            {
+              command: "codex credentials",
+              ok: false,
+              output: "Provide CODEX_API_KEY or OPENAI_API_KEY, or enable device login on start."
+            }
+          ]
+        };
+      } finally {
+        console.info(`[setup-api] trace=${traceId || "none"} getCodexReadinessStatus agent=${aiAgent} duration_ms=${Date.now() - startedAt}`);
+      }
     },
 
     async getNgrokReadinessStatus(configInput = {}) {

@@ -1,7 +1,10 @@
 import importlib
+import json
 import os
 import unittest
 from unittest.mock import Mock, patch
+import hmac
+import hashlib
 
 
 def load_app_module():
@@ -12,6 +15,8 @@ def load_app_module():
     os.environ["READY_STATUS"] = "To Do"
     os.environ["IN_PROGRESS_STATUS"] = "In Progress"
     os.environ["JIRA_WEBHOOK_SECRET"] = ""
+    os.environ["GITHUB_WEBHOOK_SECRET"] = ""
+    os.environ["AI_AGENT"] = "codex"
     module = importlib.import_module("src.app")
     return importlib.reload(module)
 
@@ -35,6 +40,10 @@ class AppLogicTests(unittest.TestCase):
 
     def test_extract_pr_url_returns_empty_string_when_missing(self):
         self.assertEqual(self.app_module.extract_pr_url("no pr here"), "")
+
+    def test_extract_issue_key_from_pull_request(self):
+        pr = {"head": {"ref": "jira/KAN-123"}, "title": "KAN-123: implement thing", "body": ""}
+        self.assertEqual(self.app_module.extract_issue_key_from_pull_request(pr), "KAN-123")
 
     def test_transition_non_match(self):
         payload = {
@@ -195,6 +204,66 @@ class AppRouteTests(unittest.TestCase):
             response = self.client.post("/webhooks/jira-transition", json=payload)
         self.assertEqual(response.status_code, 500)
         self.assertIn("queue failed", response.json["error"])
+
+    def test_github_webhook_skips_non_pull_request_event(self):
+        response = self.client.post(
+            "/webhooks/github-pr",
+            json={"action": "closed", "pull_request": {"merged": True}},
+            headers={"x-github-event": "push"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["skipped"])
+
+    def test_github_webhook_skips_unmerged_close(self):
+        response = self.client.post(
+            "/webhooks/github-pr",
+            json={"action": "closed", "pull_request": {"merged": False, "head": {"ref": "jira/KAN-123"}}},
+            headers={"x-github-event": "pull_request"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["skipped"])
+
+    def test_github_webhook_transitions_done_on_merged_pr(self):
+        payload = {"action": "closed", "pull_request": {"merged": True, "head": {"ref": "jira/KAN-123"}}}
+        with patch.object(self.app_module, "transition_issue_to_status") as transition_mock:
+            response = self.client.post(
+                "/webhooks/github-pr",
+                json=payload,
+                headers={"x-github-event": "pull_request"},
+            )
+        self.assertEqual(response.status_code, 200)
+        transition_mock.assert_called_once_with("KAN-123", self.app_module.DONE_STATUS)
+        self.assertTrue(response.json["transitioned"])
+
+    def test_github_webhook_rejects_invalid_signature(self):
+        payload = {"action": "closed", "pull_request": {"merged": True, "head": {"ref": "jira/KAN-123"}}}
+        raw = json.dumps(payload).encode("utf-8")
+        with patch.object(self.app_module, "GITHUB_WEBHOOK_SECRET", "expected-secret"):
+            response = self.client.post(
+                "/webhooks/github-pr",
+                data=raw,
+                content_type="application/json",
+                headers={"x-github-event": "pull_request", "x-hub-signature-256": "sha256=wrong"},
+            )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Invalid GitHub webhook signature", response.json["error"])
+
+    def test_github_webhook_accepts_valid_signature(self):
+        payload = {"action": "closed", "pull_request": {"merged": True, "head": {"ref": "jira/KAN-123"}}}
+        raw = json.dumps(payload).encode("utf-8")
+        secret = "expected-secret"
+        signature = "sha256=" + hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+        with patch.object(self.app_module, "GITHUB_WEBHOOK_SECRET", secret), patch.object(
+            self.app_module, "transition_issue_to_status"
+        ) as transition_mock:
+            response = self.client.post(
+                "/webhooks/github-pr",
+                data=raw,
+                content_type="application/json",
+                headers={"x-github-event": "pull_request", "x-hub-signature-256": signature},
+            )
+        self.assertEqual(response.status_code, 200)
+        transition_mock.assert_called_once_with("KAN-123", self.app_module.DONE_STATUS)
 
 
 if __name__ == "__main__":

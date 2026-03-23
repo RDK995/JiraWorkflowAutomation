@@ -20,13 +20,13 @@ sequenceDiagram
     participant Jira as Jira
     participant App as Automation Service
     participant Script as jira_ticket_to_pr.sh
-    participant Codex as Codex CLI
+    participant Agent as Selected AI Agent (Codex CLI or Claude Code)
     participant GitHub as GitHub
 
     Jira->>App: Webhook: To Do -> In Progress
     App->>Script: Start workflow for issue key
-    Script->>Codex: Implement from Jira spec
-    Codex->>GitHub: Commit + push
+    Script->>Agent: Implement from Jira spec (AI_AGENT)
+    Agent->>GitHub: Commit + push
     Script->>GitHub: Create PR
     App->>Jira: Comment PR URL / error
 ```
@@ -39,10 +39,15 @@ flowchart LR
     Ngrok --> App[Flask app.py]
     App --> Workflow[jira_ticket_to_pr.sh]
     Workflow --> JiraSpec[tools/jira/jira_to_spec.py]
-    Workflow --> Codex[Codex CLI]
+    Workflow --> Agent{AI_AGENT}
+    Agent --> Codex[Codex CLI]
+    Agent --> Claude[Claude Code CLI]
     Workflow --> GH[GitHub CLI]
     Codex --> Repo[GitHub Repo + PR]
+    Claude --> Repo
     GH --> Repo
+    VolCodex[(codex-state:/data/codex)] --- Codex
+    VolClaude[(claude-state:/data/claude)] --- Claude
 ```
 
 ## Prerequisites

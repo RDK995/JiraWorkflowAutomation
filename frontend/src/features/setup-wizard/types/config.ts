@@ -20,7 +20,7 @@ export const DEFAULT_CONFIG: Config = {
   CLAUDE_BOOTSTRAP_LOGIN: "true",
   CLAUDE_DEVICE_LOGIN_ON_START: "true",
   WORKFLOW_BASE_BRANCH: "main",
-  CODEX_EXEC_ARGS: "--full-auto",
+  CODEX_EXEC_ARGS: "--full-auto --sandbox danger-full-access",
   ANTHROPIC_API_KEY: "",
   CLAUDE_EXEC_ARGS: "--allowedTools Bash,Edit,Write,Read",
   NGROK_ENABLE: "false",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ConnectionTestPanel } from "../../components/ui/ConnectionTestPanel";
 import { Field } from "../../components/ui/Field";
 import { ResultList } from "../../components/ui/ResultList";
@@ -12,7 +12,7 @@ import prontoRocket from "../../assets/pronto_design_kit/pronto-rocket.png";
 import prontoStarsOverlay from "../../assets/pronto_design_kit/pronto-stars-overlay.png";
 import { apiGet, apiPost, getApiBase } from "./api/setupApi";
 import { STEP_FIELDS, STEPS } from "./constants/steps";
-import type { DockerContextResponse, PrereqResponse, ReadinessCheckResponse, StatusResponse, ValidationResponse } from "./types/api";
+import type { ClaudeLoginSessionResponse, ClaudeLoginSubmitCodeResponse, CodexLoginSessionResponse, DockerContextResponse, PrereqResponse, ReadinessCheckResponse, StatusResponse, ValidationResponse } from "./types/api";
 import { DEFAULT_CONFIG, type Config } from "./types/config";
 
 function SetupWizardApp() {
@@ -43,12 +43,40 @@ function SetupWizardApp() {
   const [setupApiReachable, setSetupApiReachable] = useState<boolean | null>(null);
   const [setupApiError, setSetupApiError] = useState<string>("");
   const [setupApiActionLabel, setSetupApiActionLabel] = useState("Start Setup API");
+  const [codexLoginSession, setCodexLoginSession] = useState<CodexLoginSessionResponse["session"] | null>(null);
+  const [isStartingCodexLogin, setIsStartingCodexLogin] = useState(false);
+  const [isCancellingCodexLogin, setIsCancellingCodexLogin] = useState(false);
+  const [codexSignInLinkClicked, setCodexSignInLinkClicked] = useState(false);
+  const [claudeLoginSession, setClaudeLoginSession] = useState<ClaudeLoginSessionResponse["session"] | null>(null);
+  const [isStartingClaudeLogin, setIsStartingClaudeLogin] = useState(false);
+  const [isCancellingClaudeLogin, setIsCancellingClaudeLogin] = useState(false);
+  const [claudeSignInLinkClicked, setClaudeSignInLinkClicked] = useState(false);
+  const [claudeAuthCodeInput, setClaudeAuthCodeInput] = useState("");
+  const [isSubmittingClaudeAuthCode, setIsSubmittingClaudeAuthCode] = useState(false);
+  const [claudeAuthCodeSubmitted, setClaudeAuthCodeSubmitted] = useState(false);
+  const [claudeAuthCodeSubmitAttempted, setClaudeAuthCodeSubmitAttempted] = useState(false);
   const [dockerRecoveryMessage, setDockerRecoveryMessage] = useState<string>("");
   const [dockerContexts, setDockerContexts] = useState<DockerContextResponse["contexts"]>([]);
   const [selectedDockerContext, setSelectedDockerContext] = useState("");
   const [completedStepIndexes, setCompletedStepIndexes] = useState<number[]>([]);
   const [isNavigationLocked, setIsNavigationLocked] = useState(false);
   const [hasLaunchedThisSession, setHasLaunchedThisSession] = useState(false);
+  const lastClaudeSessionSnapshotRef = useRef<string>("");
+
+  const createTraceId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+    let timeoutHandle: number | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) {
+        window.clearTimeout(timeoutHandle);
+      }
+    }
+  };
 
   useEffect(() => {
     document.title = "PRonto";
@@ -112,6 +140,7 @@ function SetupWizardApp() {
       return;
     }
 
+    setIsCheckingDocker(false);
     void checkSetupApiReachability();
   }, [stepIndex]);
 
@@ -153,6 +182,84 @@ function SetupWizardApp() {
   }, [config.CLAUDE_BOOTSTRAP_LOGIN, config.CLAUDE_DEVICE_LOGIN_ON_START]);
   const selectedAiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
   const integrationDisplayLabel = selectedAiAgent === "claude" ? "Claude Code" : "Codex";
+  const claudeAuthUrl = useMemo(() => {
+    if (claudeLoginSession?.authUrl) {
+      return claudeLoginSession.authUrl;
+    }
+    const combined = (claudeLoginSession?.logs || []).join("\n");
+    const match = combined.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s]*/);
+    return match ? match[0] : "";
+  }, [claudeLoginSession?.authUrl, claudeLoginSession?.logs]);
+  const codexNextAction = codexLoginSession?.nextAction || "start_sign_in";
+  const claudeNextAction = claudeLoginSession?.nextAction || "start_sign_in";
+  const codexLoginStarted = codexNextAction !== "start_sign_in" && codexNextAction !== "retry_sign_in";
+  const claudeLoginStarted = claudeNextAction !== "start_sign_in" && claudeNextAction !== "retry_sign_in";
+  const requireCodexSignInBeforeTest = selectedAiAgent === "codex" && codexAuthMode === "device";
+  const requireClaudeSignInBeforeTest = selectedAiAgent === "claude" && claudeAuthMode === "device";
+  const isCodexIntegrationTestLocked = requireCodexSignInBeforeTest && codexNextAction !== "test_access";
+  const isClaudeIntegrationTestLocked = requireClaudeSignInBeforeTest && claudeNextAction !== "test_access";
+  const isIntegrationTestLocked = isCodexIntegrationTestLocked || isClaudeIntegrationTestLocked;
+  const codexNeedsStart = requireCodexSignInBeforeTest && (codexNextAction === "start_sign_in" || codexNextAction === "retry_sign_in");
+  const codexNeedsOpenSignIn = requireCodexSignInBeforeTest && codexNextAction === "open_sign_in" && !codexSignInLinkClicked;
+  const claudeNeedsStart = requireClaudeSignInBeforeTest && (claudeNextAction === "start_sign_in" || claudeNextAction === "retry_sign_in");
+  const claudeNeedsOpenSignIn = requireClaudeSignInBeforeTest && claudeNextAction === "open_sign_in" && !claudeSignInLinkClicked;
+  const codexLoginInProgress = codexNextAction === "open_sign_in" || codexNextAction === "wait_for_verification";
+  const claudeLoginInProgress = claudeNextAction === "open_sign_in" || claudeNextAction === "wait_for_verification";
+  const claudeNeedsPasteCode =
+    requireClaudeSignInBeforeTest &&
+    claudeNextAction === "open_sign_in" &&
+    claudeSignInLinkClicked &&
+    !claudeAuthCodeSubmitted &&
+    !claudeAuthCodeInput.trim();
+  const integrationTestReady = !isCheckingIntegration && !isIntegrationTestLocked && !integrationCheck?.ok;
+  const integrationNeedsTestNow = integrationTestReady && (
+    !requireCodexSignInBeforeTest && !requireClaudeSignInBeforeTest
+    || (requireCodexSignInBeforeTest && codexNextAction === "test_access")
+    || (requireClaudeSignInBeforeTest && claudeNextAction === "test_access")
+  );
+  const integrationStepHint = (() => {
+    if (selectedAiAgent === "codex" && codexAuthMode === "device") {
+      if (codexNeedsStart) {
+        return "Step 1: Click Sign in with Codex.";
+      }
+      if (codexNeedsOpenSignIn) {
+        return "Step 2: Click Open Codex Sign-in and complete browser authentication.";
+      }
+      if (codexNextAction === "wait_for_verification") {
+        return "Step 3: Wait for Codex login verification to complete.";
+      }
+      if (integrationNeedsTestNow) {
+        return "Step 4: Click Test Codex Access.";
+      }
+      if (integrationCheck?.ok) {
+        return "Codex setup complete. Click Next to continue.";
+      }
+    }
+    if (selectedAiAgent === "claude" && claudeAuthMode === "device") {
+      if (claudeNeedsStart) {
+        return "Step 1: Click Sign in with Claude.";
+      }
+      if (claudeNeedsOpenSignIn) {
+        return "Step 2: Click Open Claude Sign-in and complete browser authentication.";
+      }
+      if (claudeNextAction === "open_sign_in" && !claudeAuthCodeSubmitAttempted) {
+        return "Step 3: Paste the code and click Submit Code.";
+      }
+      if (claudeNextAction === "wait_for_verification") {
+        return "Step 4: Wait for Claude status to change to success.";
+      }
+      if (integrationNeedsTestNow) {
+        return "Step 5: Click Test Claude Code Access.";
+      }
+      if (integrationCheck?.ok) {
+        return "Claude setup complete. Click Next to continue.";
+      }
+    }
+    if (!integrationCheck?.ok) {
+      return `Click Test ${integrationDisplayLabel} Access to continue.`;
+    }
+    return `${integrationDisplayLabel} setup complete. Click Next to continue.`;
+  })();
 
   const reviewItems = useMemo(
     () => [
@@ -535,15 +642,227 @@ function SetupWizardApp() {
 
   const runIntegrationCheck = async () => {
     setIsCheckingIntegration(true);
+    const traceId = createTraceId("integration-check");
+    setActivity((current) => [...current, `Starting integration check (${traceId})...`]);
     try {
-      setIntegrationCheck(await apiPost<ReadinessCheckResponse>("/api/checks/codex-readiness", { config }));
+      const result = await withTimeout(
+        apiPost<ReadinessCheckResponse>("/api/checks/codex-readiness", { config, traceId }),
+        15000,
+        "Integration check timed out. Please retry."
+      );
+      setIntegrationCheck(result);
+      setActivity((current) => [...current, `Integration check completed (${traceId}).`]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Integration check failed (${traceId}): ${message}`]);
       setIntegrationCheck({ ok: false, checks: [{ command: "integration readiness", ok: false, output: message }] });
     } finally {
       setIsCheckingIntegration(false);
     }
   };
+
+  const startCodexLoginFromUi = async () => {
+    setIsStartingCodexLogin(true);
+    setCodexSignInLinkClicked(false);
+    try {
+      const result = await apiPost<CodexLoginSessionResponse>("/api/integrations/codex/login/start", { config });
+      setCodexLoginSession(result.session);
+      if (result.error) {
+        setActivity((current) => [...current, `Codex login could not start: ${result.error}`]);
+      } else {
+        setActivity((current) => [...current, "Codex login session started. Complete browser sign-in, then wait for verification."]);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Codex login could not start: ${message}`]);
+    } finally {
+      setIsStartingCodexLogin(false);
+    }
+  };
+
+  const cancelCodexLoginFromUi = async () => {
+    setIsCancellingCodexLogin(true);
+    try {
+      const result = await apiPost<CodexLoginSessionResponse>("/api/integrations/codex/login/cancel", {});
+      setCodexLoginSession(result.session);
+      setActivity((current) => [...current, "Codex login session cancelled."]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Could not cancel Codex login session: ${message}`]);
+    } finally {
+      setIsCancellingCodexLogin(false);
+    }
+  };
+
+  const startClaudeLoginFromUi = async () => {
+    setIsStartingClaudeLogin(true);
+    setClaudeSignInLinkClicked(false);
+    setClaudeAuthCodeSubmitted(false);
+    setClaudeAuthCodeSubmitAttempted(false);
+    setClaudeAuthCodeInput("");
+    try {
+      const result = await apiPost<ClaudeLoginSessionResponse>("/api/integrations/claude/login/start", { config });
+      setClaudeLoginSession(result.session);
+      if (result.error) {
+        setActivity((current) => [...current, `Claude login could not start: ${result.error}`]);
+      } else {
+        setActivity((current) => [...current, "Claude login session started. Complete browser sign-in, then wait for verification."]);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Claude login could not start: ${message}`]);
+    } finally {
+      setIsStartingClaudeLogin(false);
+    }
+  };
+
+  const cancelClaudeLoginFromUi = async () => {
+    setIsCancellingClaudeLogin(true);
+    try {
+      const result = await apiPost<ClaudeLoginSessionResponse>("/api/integrations/claude/login/cancel", {});
+      setClaudeLoginSession(result.session);
+      setClaudeAuthCodeSubmitted(false);
+      setClaudeAuthCodeSubmitAttempted(false);
+      setClaudeAuthCodeInput("");
+      setActivity((current) => [...current, "Claude login session cancelled."]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Could not cancel Claude login session: ${message}`]);
+    } finally {
+      setIsCancellingClaudeLogin(false);
+    }
+  };
+
+  const submitClaudeAuthCodeFromUi = async () => {
+    const code = claudeAuthCodeInput.trim();
+    if (!code) {
+      setActivity((current) => [...current, "Paste the authentication code before submitting."]);
+      return;
+    }
+
+    setIsSubmittingClaudeAuthCode(true);
+    setClaudeAuthCodeSubmitAttempted(true);
+    const traceId = createTraceId("claude-submit");
+    setActivity((current) => [...current, `Submitting Claude auth code (${traceId})...`]);
+    try {
+      const result = await withTimeout(
+        apiPost<ClaudeLoginSubmitCodeResponse>("/api/integrations/claude/login/submit-code", { code, traceId }),
+        12000,
+        "Claude auth code submission timed out. Retry submit."
+      );
+      setClaudeLoginSession(result.session);
+      if (!result.ok) {
+        setActivity((current) => [...current, `Could not submit Claude code: ${result.error || "Unknown error"}`]);
+      } else {
+        setClaudeAuthCodeSubmitted(true);
+        setClaudeAuthCodeInput("");
+        setActivity((current) => [...current, `Authentication code sent to Claude login session (${traceId}).`]);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setActivity((current) => [...current, `Could not submit Claude code: ${message}`]);
+    } finally {
+      setIsSubmittingClaudeAuthCode(false);
+    }
+  };
+
+  useEffect(() => {
+    const sessionState = claudeLoginSession?.state;
+    if (selectedAiAgent !== "claude") {
+      return;
+    }
+    if (sessionState !== "running" && sessionState !== "waiting_for_browser" && sessionState !== "verifying") {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void apiGet<ClaudeLoginSessionResponse>("/api/integrations/claude/login/status")
+        .then((result) => {
+          setClaudeLoginSession(result.session);
+          if (result.session.state === "success") {
+            setActivity((current) => [...current, "Claude login is ready. Running integration readiness check."]);
+            void runIntegrationCheck();
+          }
+        })
+        .catch(() => undefined);
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [claudeLoginSession?.state, selectedAiAgent]);
+
+  useEffect(() => {
+    const sessionState = codexLoginSession?.state;
+    if (selectedAiAgent !== "codex") {
+      return;
+    }
+    if (sessionState !== "running" && sessionState !== "waiting_for_browser" && sessionState !== "verifying") {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void apiGet<CodexLoginSessionResponse>("/api/integrations/codex/login/status")
+        .then((result) => {
+          setCodexLoginSession(result.session);
+          if (result.session.state === "success") {
+            setActivity((current) => [...current, "Codex login is ready. Running integration readiness check."]);
+            void runIntegrationCheck();
+          }
+        })
+        .catch(() => undefined);
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [codexLoginSession?.state, selectedAiAgent]);
+
+  useEffect(() => {
+    if (selectedAiAgent !== "claude" || claudeAuthMode !== "device") {
+      setClaudeSignInLinkClicked(false);
+      setClaudeAuthCodeSubmitted(false);
+      setClaudeAuthCodeSubmitAttempted(false);
+      setClaudeAuthCodeInput("");
+    }
+  }, [selectedAiAgent, claudeAuthMode]);
+
+  useEffect(() => {
+    if (selectedAiAgent !== "codex" || codexAuthMode !== "device") {
+      setCodexSignInLinkClicked(false);
+    }
+  }, [selectedAiAgent, codexAuthMode]);
+
+  useEffect(() => {
+    if (selectedAiAgent !== "claude" || currentStep.id !== "integration") {
+      return;
+    }
+    setIsCheckingIntegration(false);
+    void apiGet<ClaudeLoginSessionResponse>("/api/integrations/claude/login/status")
+      .then((result) => setClaudeLoginSession(result.session))
+      .catch(() => undefined);
+  }, [selectedAiAgent, currentStep.id]);
+
+  useEffect(() => {
+    if (selectedAiAgent !== "claude" || !claudeLoginSession) {
+      return;
+    }
+    const snapshot = `${claudeLoginSession.state}:${claudeLoginSession.nextAction}:${claudeLoginSession.authUrl ? "url" : "no-url"}`;
+    if (lastClaudeSessionSnapshotRef.current === snapshot) {
+      return;
+    }
+    lastClaudeSessionSnapshotRef.current = snapshot;
+    setActivity((current) => [
+      ...current,
+      `Claude session update: state=${claudeLoginSession.state}, next=${claudeLoginSession.nextAction}, authUrl=${claudeLoginSession.authUrl ? "present" : "missing"}`
+    ]);
+  }, [selectedAiAgent, claudeLoginSession]);
+
+  useEffect(() => {
+    if (selectedAiAgent !== "codex" || currentStep.id !== "integration") {
+      return;
+    }
+    setIsCheckingIntegration(false);
+    void apiGet<CodexLoginSessionResponse>("/api/integrations/codex/login/status")
+      .then((result) => setCodexLoginSession(result.session))
+      .catch(() => undefined);
+  }, [selectedAiAgent, currentStep.id]);
 
   const runNgrokCheck = async () => {
     setIsCheckingNgrok(true);
@@ -636,19 +955,25 @@ function SetupWizardApp() {
       if (output.includes("provide anthropic_api_key when ai_agent is set to claude")) {
         return "This response came from an outdated Setup API process. Restart setup-api so Claude device-login checks are used.";
       }
+      if (output.includes("not logged in yet") || output.includes("claude auth login")) {
+        return "Claude is not authenticated yet. Use Sign in with Claude, open the sign-in link, then test again.";
+      }
       if (output.includes("enable claude_device_login_on_start")) {
         return "Enable Claude device login on start, or select persisted login if a Claude session already exists in the shared volume.";
       }
       if (output.includes("device login")) {
-        return "Claude Code is set to device login. Launch the container and complete authentication when prompted.";
+        return "Claude Code is set to device login. Use the Sign in with Claude flow above, then retest access.";
       }
       return "The Claude Code check failed. Review the selected integration settings and try again.";
+    }
+    if (output.includes("not logged in yet") || output.includes("codex login --device-auth")) {
+      return "Codex is not authenticated yet. Use Sign in with Codex, then open the sign-in link and retest.";
     }
     if (output.includes("codex_api_key or openai_api_key")) {
       return "Enable Codex device login on start, or choose persisted login if a Codex session already exists in the shared volume.";
     }
     if (output.includes("device login")) {
-      return "Codex is set to device login. Launch the container and complete device authentication when prompted.";
+      return "Codex is set to device login. Use the Sign in with Codex flow above, then retest access.";
     }
     return "The Codex check failed. Use device login or persisted login and try again.";
   }, [integrationCheck, selectedAiAgent]);
@@ -968,7 +1293,7 @@ function SetupWizardApp() {
                     <button
                       className={`primary docker-check-button ${dockerCheck ? (dockerCheck.ok ? "is-pass" : "is-fail") : ""}`}
                       onClick={() => void runDockerCheck()}
-                      disabled={isCheckingDocker || isCheckingSetupApi || setupApiReachable === false}
+                      disabled={isCheckingDocker}
                     >
                       {isCheckingDocker ? "Running System Check..." : "Run System Check"}
                     </button>
@@ -1257,6 +1582,10 @@ function SetupWizardApp() {
                 </>
               }
             >
+              <div className="integration-next-action" role="status" aria-live="polite">
+                <h4>Next action</h4>
+                <p>{integrationStepHint}</p>
+              </div>
               <label className="field">
                 <span>
                   AI integration
@@ -1283,7 +1612,36 @@ function SetupWizardApp() {
                   {codexAuthMode === "device" ? (
                     <div className="guide-section guide-link-card">
                       <h4>What happens next</h4>
-                      <p className="muted">PRonto will trigger Codex device authentication when the container starts, so you can complete login interactively.</p>
+                      <p className="muted">Sign in to Codex directly from this setup step, then test access to confirm PRonto is ready before launch.</p>
+                      <div className="login-cta-row">
+                        <button
+                          type="button"
+                          className={`secondary integration-login-button ${codexNeedsStart ? "is-next-action" : ""}`}
+                          onClick={() => void startCodexLoginFromUi()}
+                          disabled={isStartingCodexLogin || codexLoginInProgress}
+                        >
+                          {isStartingCodexLogin ? "Starting..." : codexLoginInProgress ? "Login In Progress" : "Sign in with Codex"}
+                        </button>
+                        {codexLoginSession?.authUrl ? (
+                          <a
+                            className={`button-link integration-login-link ${codexNeedsOpenSignIn ? "is-next-action" : ""}`}
+                            href={codexLoginSession.authUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={() => setCodexSignInLinkClicked(true)}
+                          >
+                            Open Codex Sign-in
+                          </a>
+                        ) : null}
+                        {codexLoginInProgress ? (
+                          <button type="button" className="secondary integration-login-cancel" onClick={() => void cancelCodexLoginFromUi()} disabled={isCancellingCodexLogin}>
+                            {isCancellingCodexLogin ? "Cancelling..." : "Cancel"}
+                          </button>
+                        ) : null}
+                      </div>
+                      {codexLoginSession ? <p className="login-cta-status">Status: {codexLoginSession.state.replace(/_/g, " ")}</p> : null}
+                      {codexLoginSession?.error ? <p className="login-cta-error">{codexLoginSession.error}</p> : null}
+                      {codexLoginSession?.logs?.length ? <pre className="login-cta-log">{codexLoginSession.logs.join("\n")}</pre> : null}
                     </div>
                   ) : null}
                   {codexAuthMode === "persisted" ? (
@@ -1320,7 +1678,72 @@ function SetupWizardApp() {
                   {claudeAuthMode === "device" ? (
                     <div className="guide-section guide-link-card">
                       <h4>What happens next</h4>
-                      <p className="muted">PRonto will trigger Claude Code device authentication when the container starts, so you can complete login interactively.</p>
+                      <p className="muted">Sign in to Claude directly from this setup step, then test access to confirm PRonto is ready before launch.</p>
+                      <div className="login-cta-row">
+                        <button
+                          type="button"
+                          className={`secondary integration-login-button ${claudeNeedsStart ? "is-next-action" : ""}`}
+                          onClick={() => void startClaudeLoginFromUi()}
+                          disabled={isStartingClaudeLogin || claudeLoginInProgress}
+                        >
+                          {isStartingClaudeLogin
+                            ? "Starting..."
+                            : claudeNextAction === "wait_for_verification"
+                              ? "Verifying..."
+                              : claudeNextAction === "open_sign_in"
+                                ? "Login In Progress"
+                                : "Sign in with Claude"}
+                        </button>
+                        {claudeLoginInProgress ? (
+                          claudeAuthUrl ? (
+                          <a
+                            className={`button-link integration-login-link ${claudeNeedsOpenSignIn ? "is-next-action" : ""}`}
+                            href={claudeAuthUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={() => setClaudeSignInLinkClicked(true)}
+                          >
+                            Open Claude Sign-in
+                          </a>
+                          ) : (
+                            <button type="button" className="secondary integration-login-link" disabled>
+                              Preparing Sign-in Link...
+                            </button>
+                          )
+                        ) : null}
+                        {claudeLoginInProgress ? (
+                          <button type="button" className="secondary integration-login-cancel" onClick={() => void cancelClaudeLoginFromUi()} disabled={isCancellingClaudeLogin}>
+                            {isCancellingClaudeLogin ? "Cancelling..." : "Cancel"}
+                          </button>
+                        ) : null}
+                      </div>
+                      {claudeLoginInProgress ? (
+                        <div className="auth-code-submit-row">
+                          <label className={`auth-code-field ${claudeNeedsPasteCode ? "needs-input" : ""}`}>
+                            <span>Paste authentication code</span>
+                            <input
+                              type="text"
+                              value={claudeAuthCodeInput}
+                              onChange={(event) => {
+                                setClaudeAuthCodeSubmitted(false);
+                                setClaudeAuthCodeInput(event.target.value);
+                              }}
+                              placeholder="Paste code from Claude sign-in page"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className={`secondary auth-code-submit-button ${claudeSignInLinkClicked && !claudeAuthCodeSubmitted && claudeAuthCodeInput.trim() ? "is-next-action" : ""}`}
+                            onClick={() => void submitClaudeAuthCodeFromUi()}
+                            disabled={isSubmittingClaudeAuthCode || !claudeSignInLinkClicked || claudeNextAction === "wait_for_verification"}
+                          >
+                            {isSubmittingClaudeAuthCode ? "Submitting..." : claudeNextAction === "wait_for_verification" ? "Verifying..." : "Submit Code"}
+                          </button>
+                        </div>
+                      ) : null}
+                      {claudeLoginSession ? <p className="login-cta-status">Status: {claudeLoginSession.state.replace(/_/g, " ")}</p> : null}
+                      {claudeLoginSession?.error ? <p className="login-cta-error">{claudeLoginSession.error}</p> : null}
+                      {claudeLoginSession?.logs?.length ? <pre className="login-cta-log">{claudeLoginSession.logs.join("\n")}</pre> : null}
                     </div>
                   ) : null}
                   {claudeAuthMode === "persisted" ? (
@@ -1342,15 +1765,32 @@ function SetupWizardApp() {
                 </>
               ) : null}
               <ConnectionTestPanel
-                buttonClassName={`primary github-check-button ${integrationCheck ? (integrationCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                buttonClassName={`primary github-check-button ${integrationCheck ? (integrationCheck.ok ? "is-pass" : "is-fail") : ""} ${integrationNeedsTestNow ? "is-next-action" : ""}`}
                 buttonLabel={isCheckingIntegration ? `Testing ${integrationDisplayLabel}...` : `Test ${integrationDisplayLabel} Access`}
                 onClick={() => void runIntegrationCheck()}
-                disabled={isCheckingIntegration}
+                disabled={isCheckingIntegration || isIntegrationTestLocked}
                 readyLabel={`✓ ${integrationDisplayLabel} ready`}
                 resultTitle="Integration test result"
                 result={integrationCheck}
                 errorHelp={integrationErrorHelp}
               />
+              {isIntegrationTestLocked ? (
+                <p className="login-cta-status">
+                  {selectedAiAgent === "claude"
+                    ? (
+                      claudeNeedsStart
+                        ? <>Start Claude login before testing access.</>
+                        : claudeNeedsOpenSignIn
+                          ? <>Click <strong>Open Claude Sign-in</strong> before testing access.</>
+                          : <>Submit your Claude authentication code and wait for verification before testing access.</>
+                    )
+                    : (
+                      codexNeedsStart
+                        ? <>Start Codex login before testing access.</>
+                        : <>Complete <strong>Open Codex Sign-in</strong> and wait for verification before testing access.</>
+                    )}
+                </p>
+              ) : null}
             </StepLayout>
           )}
 
@@ -1465,17 +1905,24 @@ function SetupWizardApp() {
           {currentStep.id === "run" && (
             <div className="run-grid">
               <div className="step-main-card terminal-side-panel">
+                <div className="run-agent-badge" aria-label={`AI provider: ${integrationDisplayLabel}`}>
+                  AI Provider: {integrationDisplayLabel}
+                </div>
                 <p className="eyebrow">Launch PRonto</p>
                 <h3>Bring the service online.</h3>
                 <p className="muted">
                   Generate the environment config, build the image, replace the running container if needed, and check service health from one launch sequence.
                 </p>
                 <div className="action-row">
-                  <button className={`primary hero-primary launch-button ${launchSucceeded ? "is-pass" : ""}`} onClick={() => void runSetup()} disabled={isBusy}>
-                    {isBusy ? "Launching..." : "Launch PRonto"}
+                  <button
+                    className={`primary hero-primary launch-button ${launchSucceeded ? "is-disabled" : ""}`}
+                    onClick={() => void runSetup()}
+                    disabled={isBusy || launchSucceeded}
+                  >
+                    {isBusy ? "Launching..." : launchSucceeded ? "Service Running" : "Launch PRonto"}
                   </button>
                   <button
-                    className="secondary hero-secondary"
+                    className={`hero-secondary ${launchSucceeded ? "danger stop-button" : "secondary"}`}
                     onClick={() => void stopSetup()}
                     disabled={isBusy}
                   >
