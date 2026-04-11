@@ -19,15 +19,8 @@ ENV PORT=3000 \
     AI_AGENT=codex \
     JIRA_BASE_URL= \
     JIRA_USER_EMAIL= \
-    JIRA_API_TOKEN= \
-    JIRA_WEBHOOK_SECRET= \
     READY_STATUS="To Do" \
     IN_PROGRESS_STATUS="In Progress" \
-    CODEX_API_KEY= \
-    ANTHROPIC_API_KEY= \
-    OPENAI_API_KEY= \
-    GITHUB_TOKEN= \
-    GH_TOKEN= \
     GIT_AUTHOR_NAME=PRonto \
     GIT_AUTHOR_EMAIL=pronto-bot@example.com \
     REQUIRE_GITHUB_AUTH=false \
@@ -41,11 +34,9 @@ ENV PORT=3000 \
     WORKFLOW_SCRIPT=./jira_ticket_to_pr.sh \
     WORKFLOW_TIMEOUT_SECONDS=5400 \
     POST_WORKFLOW_RESULT_TO_JIRA=true \
-    CODEX_EXEC_ARGS=--full-auto \
+    CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox \
     CLAUDE_EXEC_ARGS="--allowedTools Bash,Edit,Write,Read" \
     NGROK_ENABLE=false \
-    NGROK_AUTHTOKEN= \
-    NGROK_API_KEY= \
     NGROK_DOMAIN= \
     NGROK_PORT=3000
 
@@ -53,4 +44,4 @@ EXPOSE 3000
 VOLUME ["/data/codex", "/data/claude"]
 
 ENTRYPOINT ["./docker/entrypoint.sh"]
-CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT} src.app:app"]
+CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT} --access-logfile - --error-logfile - --capture-output --log-level info src.app:app"]

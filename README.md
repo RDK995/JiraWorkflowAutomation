@@ -110,7 +110,7 @@ Set these required values in `.env`:
 - `IN_REVIEW_STATUS="In Review"`
 - `GITHUB_TOKEN=<github-pat>` (recommended; `GH_TOKEN` also supported)
 - `REQUIRE_GITHUB_AUTH=true`
-- `CODEX_EXEC_ARGS=--full-auto`
+- `CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox`
 
 External key setup:
 

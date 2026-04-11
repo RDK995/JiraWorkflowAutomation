@@ -4,6 +4,20 @@ import { normalizeConfig } from "../config.js";
 import { readCurrentConfig } from "./env-file.js";
 import { dockerAvailable, getContainerLogs, getDockerStatus, runDockerReadinessCheck } from "./docker-service.js";
 
+function extractNgrokPublicBaseUrl(config = {}, logs = "") {
+  if (config.NGROK_DOMAIN) {
+    return `https://${config.NGROK_DOMAIN.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+  }
+
+  const match = logs.match(/https:\/\/[a-z0-9-]+\.ngrok(?:-free)?\.app/iu);
+  return match ? match[0] : "";
+}
+
+function extractPullRequestUrls(logs = "") {
+  const matches = logs.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g) || [];
+  return Array.from(new Set(matches));
+}
+
 export function createStatusService({
   readCurrentConfigImpl = readCurrentConfig,
   dockerAvailableImpl = dockerAvailable,
@@ -92,6 +106,104 @@ export function createStatusService({
             }
           ]
         };
+      }
+    },
+
+    async getJiraWebhookDeliveryStatus(configInput = {}) {
+      const config = normalizeConfig(configInput);
+      const checks = [];
+      const health = await this.getHealthStatus();
+
+      if (!health.reachable) {
+        return {
+          ok: false,
+          checks: [
+            {
+              command: "pronto service",
+              ok: false,
+              output: "PRonto is not reachable on localhost:3000. Launch PRonto before testing webhook delivery."
+            }
+          ]
+        };
+      }
+
+      checks.push({
+        command: "pronto service",
+        ok: true,
+        output: "PRonto is reachable on localhost:3000"
+      });
+
+      const logState = await getContainerLogsImpl(160);
+      const publicBaseUrl = extractNgrokPublicBaseUrl(config, logState.logs || "");
+
+      if (!publicBaseUrl) {
+        checks.push({
+          command: "public webhook url",
+          ok: false,
+          output: "Could not determine the public webhook URL. Launch PRonto with ngrok enabled, then retry after the ngrok URL appears in the logs."
+        });
+        return { ok: false, checks };
+      }
+
+      checks.push({
+        command: "public webhook url",
+        ok: true,
+        output: `Using ${publicBaseUrl}/webhooks/jira-transition`
+      });
+
+      const payload = {
+        issue: { key: "PRONTO-TEST" },
+        changelog: {
+          items: [
+            {
+              field: "status",
+              fromString: config.READY_STATUS,
+              toString: config.IN_PROGRESS_STATUS
+            }
+          ]
+        }
+      };
+
+      const headers = {
+        "Content-Type": "application/json",
+        "x-pronto-webhook-test": "true"
+      };
+
+      if (config.JIRA_WEBHOOK_SECRET) {
+        headers["x-jira-webhook-secret"] = config.JIRA_WEBHOOK_SECRET;
+      }
+
+      try {
+        const response = await fetchImpl(`${publicBaseUrl}/webhooks/jira-transition`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          const body = await response.text();
+          checks.push({
+            command: "webhook delivery",
+            ok: false,
+            output: `Webhook endpoint returned ${response.status}: ${body || response.statusText}`
+          });
+          return { ok: false, checks };
+        }
+
+        checks.push({
+          command: "webhook delivery",
+          ok: true,
+          output: "Test webhook reached PRonto successfully through the public URL."
+        });
+
+        return { ok: true, checks };
+      } catch (error) {
+        checks.push({
+          command: "webhook delivery",
+          ok: false,
+          output: error.message || "Unable to reach the public webhook URL"
+        });
+        return { ok: false, checks };
       }
     },
 
@@ -446,12 +558,15 @@ export function createStatusService({
     },
 
     async getFullStatus() {
-      const [configState, docker, health, logs] = await Promise.all([
+      const [configState, docker, health] = await Promise.all([
         readCurrentConfigImpl(),
         getDockerStatusImpl(),
-        this.getHealthStatus(),
-        getContainerLogsImpl(80)
+        this.getHealthStatus()
       ]);
+
+      const [consoleLogs, prDiscoveryLogs] = docker.container?.exists
+        ? await Promise.all([getContainerLogsImpl(80), getContainerLogsImpl(400)])
+        : [{ ok: true, logs: "" }, { ok: true, logs: "" }];
 
       return {
         config: {
@@ -460,7 +575,8 @@ export function createStatusService({
         },
         docker,
         health,
-        logs: logs.logs
+        logs: consoleLogs.logs,
+        createdPullRequests: extractPullRequestUrls(prDiscoveryLogs.logs)
       };
     }
   };
@@ -471,6 +587,7 @@ const defaultService = createStatusService();
 export const getPrerequisiteChecks = defaultService.getPrerequisiteChecks.bind(defaultService);
 export const getDockerReadinessStatus = defaultService.getDockerReadinessStatus.bind(defaultService);
 export const getJiraReadinessStatus = defaultService.getJiraReadinessStatus.bind(defaultService);
+export const getJiraWebhookDeliveryStatus = defaultService.getJiraWebhookDeliveryStatus.bind(defaultService);
 export const getGitHubReadinessStatus = defaultService.getGitHubReadinessStatus.bind(defaultService);
 export const getCodexReadinessStatus = defaultService.getCodexReadinessStatus.bind(defaultService);
 export const getNgrokReadinessStatus = defaultService.getNgrokReadinessStatus.bind(defaultService);

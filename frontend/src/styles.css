@@ -660,6 +660,33 @@ a:hover {
   letter-spacing: -0.01em;
 }
 
+.activity-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.activity-card-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(145, 170, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.activity-card-close:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: rgba(79, 125, 255, 0.1);
+}
+
 .summary-step h4 {
   font-size: 1.05rem;
 }
@@ -812,6 +839,231 @@ a:hover {
 .mini-guide-list dd {
   margin: 0;
   color: var(--text-body);
+}
+
+.webhook-page .step-main-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.webhook-hero-copy {
+  max-width: 52rem;
+}
+
+.webhook-config-panel,
+.webhook-url-panel,
+.webhook-side-panel {
+  padding: 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(145, 170, 255, 0.16);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.webhook-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-top: 0.2rem;
+}
+
+.webhook-config-item {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid rgba(145, 170, 255, 0.14);
+  background: rgba(8, 14, 29, 0.42);
+}
+
+.webhook-config-item-wide {
+  grid-column: 1 / -1;
+}
+
+.webhook-config-label {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.webhook-config-item strong,
+.webhook-config-item code,
+.webhook-url-value code {
+  color: var(--text-strong);
+}
+
+.webhook-config-item p {
+  margin: 0;
+  color: var(--text-body);
+}
+
+.webhook-url-card {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.2rem;
+  padding: 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(145, 170, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.008)),
+    rgba(8, 14, 29, 0.45);
+}
+
+.webhook-url-card.is-ready {
+  border-color: rgba(90, 194, 135, 0.26);
+  background:
+    linear-gradient(180deg, rgba(90, 194, 135, 0.08), rgba(255, 255, 255, 0.008)),
+    rgba(8, 14, 29, 0.45);
+}
+
+.webhook-url-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 1.9rem;
+  padding: 0 0.72rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(145, 170, 255, 0.18);
+  background: rgba(79, 125, 255, 0.12);
+  color: var(--text-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.webhook-url-card.is-ready .webhook-url-chip {
+  border-color: rgba(90, 194, 135, 0.24);
+  background: rgba(90, 194, 135, 0.16);
+  color: #dff6e9;
+}
+
+.webhook-url-value {
+  margin: 0;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(145, 170, 255, 0.14);
+  background: rgba(6, 10, 24, 0.62);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.webhook-test-panel {
+  margin-top: 0.15rem;
+}
+
+.webhook-side-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.webhook-side-list li {
+  line-height: 1.5;
+}
+
+.jira-webhook-example {
+  margin-top: 0.2rem;
+}
+
+.jira-webhook-shot {
+  display: grid;
+  gap: 0.95rem;
+  padding: 1.05rem;
+  border-radius: 18px;
+  border: 1px solid rgba(145, 170, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.016), rgba(255, 255, 255, 0.006)),
+    rgba(7, 11, 24, 0.58);
+}
+
+.jira-webhook-shot-header {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.jira-webhook-shot-header strong {
+  color: var(--text-strong);
+  font-size: 1.02rem;
+}
+
+.jira-webhook-shot-header p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.jira-webhook-shot-query {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(145, 170, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.jira-webhook-shot-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 999px;
+  background: rgba(90, 194, 135, 0.16);
+  color: var(--success);
+  font-weight: 800;
+  flex: 0 0 auto;
+}
+
+.jira-webhook-shot-query code {
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.jira-webhook-shot-link {
+  color: var(--accent-soft);
+  font-weight: 620;
+}
+
+.jira-webhook-shot-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.jira-webhook-shot-column {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.jira-webhook-shot-label {
+  color: var(--text-strong);
+  font-weight: 700;
+}
+
+.jira-webhook-shot-option {
+  position: relative;
+  padding-left: 1.6rem;
+  color: var(--text-body);
+}
+
+.jira-webhook-shot-option::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.28rem;
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 0.22rem;
+  border: 1px solid rgba(145, 170, 255, 0.34);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.jira-webhook-shot-option.is-checked::before {
+  background: rgba(79, 125, 255, 0.9);
+  border-color: rgba(115, 151, 255, 0.92);
+  box-shadow: inset 0 0 0 2px rgba(8, 13, 25, 0.72);
 }
 
 .field {

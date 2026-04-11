@@ -203,6 +203,10 @@ PY
     echo "Starting ngrok tunnel on port ${tunnel_port}"
     ngrok http "${tunnel_port}" >/tmp/ngrok.log 2>&1 &
   fi
+  (
+    touch /tmp/ngrok.log
+    tail -n +1 -F /tmp/ngrok.log 2>/dev/null | awk '{ print "[ngrok] " $0; fflush(); }'
+  ) &
   echo "ngrok started in background. Inspect /tmp/ngrok.log for tunnel URL."
 fi
 

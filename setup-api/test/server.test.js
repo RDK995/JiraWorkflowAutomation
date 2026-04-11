@@ -91,6 +91,26 @@ test("POST /api/checks/jira-readiness forwards form config to service", async ()
   assert.deepEqual(seenConfig, config);
 });
 
+test("POST /api/checks/jira-webhook-delivery forwards form config to service", async () => {
+  let seenConfig;
+  const config = { JIRA_WEBHOOK_SECRET: "secret" };
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/checks/jira-webhook-delivery",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ config }),
+    deps: {
+      getJiraWebhookDeliveryStatusImpl: async (value) => {
+        seenConfig = value;
+        return { ok: true, checks: [] };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(seenConfig, config);
+});
+
 test("POST /api/checks/github-readiness forwards form config to service", async () => {
   let seenConfig;
   const config = { GITHUB_TOKEN: "ghp_token" };
@@ -131,6 +151,24 @@ test("POST /api/checks/codex-readiness forwards form config to service", async (
   assert.deepEqual(seenConfig, config);
 });
 
+test("POST /api/checks/codex-container-auth calls the docker service", async () => {
+  let called = false;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/checks/codex-container-auth",
+    headers: { host: "localhost" },
+    deps: {
+      getCodexContainerAuthStatusImpl: async () => {
+        called = true;
+        return { ok: true, checks: [] };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(called, true);
+});
+
 test("POST /api/checks/ngrok-readiness forwards form config to service", async () => {
   let seenConfig;
   const config = { NGROK_ENABLE: "true", NGROK_AUTHTOKEN: "token" };
@@ -169,6 +207,86 @@ test("POST /api/docker/start-colima calls the docker service", async () => {
   assert.equal(called, true);
 });
 
+test("POST /api/docker/build returns structured failure payloads", async () => {
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/docker/build",
+    headers: { host: "localhost" },
+    deps: {
+      buildImageImpl: async () => ({
+        ok: false,
+        output: "build failed",
+        diagnosis: {
+          code: "docker_build_failed",
+          title: "Build failed",
+          message: "Review Docker output"
+        }
+      })
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).diagnosis.code, "docker_build_failed");
+});
+
+test("POST /api/docker/network-check calls the docker service", async () => {
+  let called = false;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/docker/network-check",
+    headers: { host: "localhost" },
+    deps: {
+      runDockerNetworkCheckImpl: async () => {
+        called = true;
+        return { ok: true, checks: [] };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(called, true);
+});
+
+test("POST /api/docker/reset-builder-cache calls the docker service", async () => {
+  let called = false;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/docker/reset-builder-cache",
+    headers: { host: "localhost" },
+    deps: {
+      resetDockerBuilderCacheImpl: async () => {
+        called = true;
+        return { ok: true, output: "cleared" };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(called, true);
+});
+
+test("POST /api/docker/start-colima returns structured failure payloads", async () => {
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/docker/start-colima",
+    headers: { host: "localhost" },
+    deps: {
+      startColimaImpl: async () => ({
+        ok: false,
+        output: "colima missing",
+        diagnosis: {
+          code: "colima_not_installed",
+          title: "Colima missing",
+          message: "Install Colima"
+        }
+      })
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).diagnosis.code, "colima_not_installed");
+});
+
 test("POST /api/docker/open-docker-desktop calls the docker service", async () => {
   let called = false;
   const response = await invokeRoute({
@@ -185,6 +303,28 @@ test("POST /api/docker/open-docker-desktop calls the docker service", async () =
 
   assert.equal(response.statusCode, 200);
   assert.equal(called, true);
+});
+
+test("POST /api/docker/open-docker-desktop returns structured failure payloads", async () => {
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/docker/open-docker-desktop",
+    headers: { host: "localhost" },
+    deps: {
+      openDockerDesktopImpl: async () => ({
+        ok: false,
+        output: "docker desktop missing",
+        diagnosis: {
+          code: "docker_desktop_not_installed",
+          title: "Docker Desktop missing",
+          message: "Install Docker Desktop"
+        }
+      })
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).diagnosis.code, "docker_desktop_not_installed");
 });
 
 test("GET /api/docker/contexts calls the docker service", async () => {

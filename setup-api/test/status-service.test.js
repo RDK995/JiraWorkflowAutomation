@@ -33,6 +33,56 @@ test("getJiraReadinessStatus returns authenticated user on success", async () =>
   assert.equal(calls[0].url, "https://example.atlassian.net/rest/api/3/myself");
 });
 
+test("getJiraWebhookDeliveryStatus requires running PRonto service", async () => {
+  const service = createStatusService({
+    fetchImpl: async () => {
+      throw new Error("connect ECONNREFUSED");
+    }
+  });
+
+  const result = await service.getJiraWebhookDeliveryStatus({});
+
+  assert.equal(result.ok, false);
+  assert.match(result.checks[0].output, /Launch PRonto before testing webhook delivery/);
+});
+
+test("getJiraWebhookDeliveryStatus posts a test webhook to the public ngrok url", async () => {
+  const calls = [];
+  const service = createStatusService({
+    getContainerLogsImpl: async () => ({ logs: "Tunnel established at https://demo.ngrok-free.app" }),
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url === "http://127.0.0.1:3000/health") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: "ok" })
+        };
+      }
+      if (url === "https://demo.ngrok-free.app/webhooks/jira-transition") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ tested: true })
+        };
+      }
+      throw new Error(`Unexpected url: ${url}`);
+    }
+  });
+
+  const result = await service.getJiraWebhookDeliveryStatus({
+    READY_STATUS: "Ready",
+    IN_PROGRESS_STATUS: "In Progress",
+    JIRA_WEBHOOK_SECRET: "secret"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[1].url, "https://demo.ngrok-free.app/webhooks/jira-transition");
+  assert.equal(calls[1].options.method, "POST");
+  assert.equal(calls[1].options.headers["x-pronto-webhook-test"], "true");
+  assert.equal(calls[1].options.headers["x-jira-webhook-secret"], "secret");
+});
+
 test("getGitHubReadinessStatus reports missing token", async () => {
   const service = createStatusService();
   const result = await service.getGitHubReadinessStatus({});
@@ -138,7 +188,7 @@ test("getCodexReadinessStatus rejects invalid Claude login mode combination", as
 
 test("getNgrokReadinessStatus passes when ngrok is disabled", async () => {
   const service = createStatusService();
-  const result = await service.getNgrokReadinessStatus({});
+  const result = await service.getNgrokReadinessStatus({ NGROK_ENABLE: "false" });
   assert.equal(result.ok, true);
   assert.match(result.checks[0].output, /ngrok is disabled/i);
 });
@@ -186,10 +236,16 @@ test("getHealthStatus returns error when service is unavailable", async () => {
 });
 
 test("getFullStatus combines config, docker, health, and logs", async () => {
+  const tails = [];
   const service = createStatusService({
     readCurrentConfigImpl: async () => ({ exists: true, config: { PORT: "3000" } }),
-    getDockerStatusImpl: async () => ({ available: true, imageExists: true, container: { running: true } }),
-    getContainerLogsImpl: async () => ({ logs: "tail logs" }),
+    getDockerStatusImpl: async () => ({ available: true, imageExists: true, container: { exists: true, running: true } }),
+    getContainerLogsImpl: async (tail) => {
+      tails.push(tail);
+      return {
+        logs: tail === 400 ? "Created https://github.com/RDK995/ExampleFrontend/pull/5" : "tail logs"
+      };
+    },
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: "ok" }) })
   });
 
@@ -198,4 +254,30 @@ test("getFullStatus combines config, docker, health, and logs", async () => {
   assert.equal(result.docker.available, true);
   assert.equal(result.health.reachable, true);
   assert.equal(result.logs, "tail logs");
+  assert.deepEqual(result.createdPullRequests, ["https://github.com/RDK995/ExampleFrontend/pull/5"]);
+  assert.deepEqual(tails, [80, 400]);
+});
+
+test("getFullStatus skips container logs when the PRonto container does not exist yet", async () => {
+  let logsCalled = false;
+  const service = createStatusService({
+    readCurrentConfigImpl: async () => ({ exists: true, config: {} }),
+    getDockerStatusImpl: async () => ({
+      available: true,
+      imageExists: true,
+      container: { exists: false, running: false, status: "not-created", name: "jira-automation" }
+    }),
+    getContainerLogsImpl: async () => {
+      logsCalled = true;
+      return { logs: "should not be fetched" };
+    },
+    fetchImpl: async () => {
+      throw new Error("connect ECONNREFUSED");
+    }
+  });
+
+  const result = await service.getFullStatus();
+  assert.equal(logsCalled, false);
+  assert.equal(result.logs, "");
+  assert.deepEqual(result.createdPullRequests, []);
 });

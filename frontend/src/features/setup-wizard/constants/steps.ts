@@ -5,6 +5,7 @@ export const STEPS = [
   { id: "github", title: "Connect GitHub" },
   { id: "integration", title: "Choose AI Integration" },
   { id: "ngrok", title: "Public Access" },
+  { id: "webhook", title: "Jira Webhook" },
   { id: "review", title: "Ready For Launch" },
   { id: "run", title: "Launch Console" }
 ] as const;
@@ -35,5 +36,6 @@ export const STEP_FIELDS: Record<string, string[]> = {
   ],
   ngrok: ["NGROK_ENABLE", "NGROK_AUTHTOKEN", "NGROK_API_KEY", "NGROK_DOMAIN"],
   review: [],
+  webhook: [],
   run: []
 };

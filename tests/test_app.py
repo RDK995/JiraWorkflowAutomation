@@ -1,4 +1,5 @@
 import importlib
+import io
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -128,13 +129,48 @@ class AppLogicTests(unittest.TestCase):
 
     def test_run_ai_workflow_passes_agent_env(self):
         """Verify run_ai_workflow injects AI_AGENT into subprocess env."""
-        with patch("src.app.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(returncode=0, stdout="ok", stderr="")
+        process = Mock()
+        process.stdout = io.StringIO("ok\n")
+        process.wait.return_value = 0
+        with patch("src.app.subprocess.Popen", return_value=process) as mock_popen:
             with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
                 self.app_module.run_ai_workflow("KAN-123")
-            call_kwargs = mock_run.call_args
+            call_kwargs = mock_popen.call_args
             env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env", {})
             self.assertEqual(env.get("AI_AGENT"), self.app_module.AI_AGENT)
+
+    def test_run_ai_workflow_reports_container_sandbox_guidance_for_bwrap_failure(self):
+        process = Mock()
+        process.stdout = io.StringIO("Blocked on environment access.\nbwrap: No permissions to create a new namespace\n")
+        process.wait.return_value = 1
+        with patch("src.app.subprocess.Popen", return_value=process):
+            with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
+                with self.assertRaises(RuntimeError) as ctx:
+                    self.app_module.run_ai_workflow("KAN-123")
+
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", str(ctx.exception))
+
+    def test_run_ai_workflow_streams_subprocess_output_into_logs(self):
+        process = Mock()
+        process.stdout = io.StringIO(
+            "Step 1 of 6: Generating the Jira implementation brief from KAN-123.\n"
+            "Codex is reading the Jira brief, editing files, and running checks. This can take a few minutes.\n"
+            "https://github.com/org/repo/pull/45\n"
+            "+ noisy diff line that should not be logged\n"
+        )
+        process.wait.return_value = 0
+
+        with patch("src.app.subprocess.Popen", return_value=process):
+            with patch.object(self.app_module.app.logger, "info") as log_mock:
+                with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
+                    output = self.app_module.run_ai_workflow("KAN-123")
+
+        self.assertIn("Step 1 of 6", output)
+        logged_messages = " ".join(str(call.args) for call in log_mock.call_args_list)
+        self.assertIn("workflow[%s]: %s", logged_messages)
+        self.assertIn("KAN-123", logged_messages)
+        self.assertIn("Pull request created successfully", logged_messages)
+        self.assertNotIn("noisy diff line", logged_messages)
 
 
 class AppRouteTests(unittest.TestCase):
@@ -185,6 +221,21 @@ class AppRouteTests(unittest.TestCase):
             response = self.client.post("/webhooks/jira-transition", json=payload)
         self.assertEqual(response.status_code, 202)
         self.assertTrue(response.json["queued"])
+
+    def test_webhook_test_request_returns_success_without_queueing(self):
+        payload = {
+            "issue": {"key": "PRONTO-TEST"},
+            "changelog": {"items": [{"field": "status", "fromString": "Ready", "toString": "In Progress"}]},
+        }
+        with patch.object(self.app_module, "enqueue_automation") as enqueue_mock:
+            response = self.client.post(
+                "/webhooks/jira-transition",
+                json=payload,
+                headers={"x-pronto-webhook-test": "true"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["tested"])
+        enqueue_mock.assert_not_called()
 
     def test_webhook_returns_500_when_enqueue_fails(self):
         payload = {

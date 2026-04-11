@@ -15,7 +15,7 @@ export function ResultList(props: ResultListProps) {
       {props.result.checks.map((check) => (
         <li key={check.command} className={check.ok ? "result-pass" : "result-fail"}>
           <strong>{check.ok ? "✓" : "✕"} {check.command}</strong>
-          <span>{check.output}</span>
+          {check.output ? <span>{check.output}</span> : null}
         </li>
       ))}
     </ul>
