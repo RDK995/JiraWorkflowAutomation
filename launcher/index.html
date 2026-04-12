@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PRonto Launcher</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div class="launcher-shell">
+      <div class="launcher-card">
+        <p class="eyebrow">PRonto Launcher</p>
+        <h1>Start the setup flow.</h1>
+        <p class="lead">
+          This launcher gets the PRonto setup wizard running locally, then opens it in your browser.
+        </p>
+
+        <div class="status-grid">
+          <div class="status-pill" data-status="repo">
+            <span class="label">Workspace</span>
+            <strong id="repo-status">Checking…</strong>
+          </div>
+          <div class="status-pill" data-status="node">
+            <span class="label">Node</span>
+            <strong id="node-status">Checking…</strong>
+          </div>
+          <div class="status-pill" data-status="frontend">
+            <span class="label">Setup UI Build</span>
+            <strong id="frontend-status">Checking…</strong>
+          </div>
+          <div class="status-pill" data-status="api">
+            <span class="label">Setup API</span>
+            <strong id="api-status">Checking…</strong>
+          </div>
+        </div>
+
+        <div class="callout" id="message-box">
+          <strong id="message-title">Launcher status</strong>
+          <p id="message-text">Checking your local PRonto workspace.</p>
+        </div>
+
+        <div class="prereq-list">
+          <h2>Before first launch</h2>
+          <ul>
+            <li>Install Docker Desktop and open it once.</li>
+            <li>Install Node.js so the local setup API can run.</li>
+            <li>Keep this launcher inside the downloaded PRonto folder, or set <code>PRONTO_WORKSPACE_ROOT</code>.</li>
+            <li>For packaged releases, make sure the setup UI bundle is included.</li>
+          </ul>
+        </div>
+
+        <div class="actions">
+          <button id="start-button" class="primary">Start PRonto Setup</button>
+          <button id="open-button" class="secondary" disabled>Open Setup In Browser</button>
+          <button id="refresh-button" class="ghost">Refresh Status</button>
+        </div>
+
+        <div class="details">
+          <p><strong>Setup URL:</strong> <code id="setup-url">http://127.0.0.1:3010</code></p>
+          <p class="muted" id="repo-root"></p>
+          <p class="muted">If startup fails, the launcher will tell you whether the workspace, Node.js, or the built setup UI is missing.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

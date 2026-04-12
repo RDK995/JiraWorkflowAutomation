@@ -4,5 +4,8 @@ __pycache__/
 node_modules/
 frontend/node_modules/
 setup-api/node_modules/
+launcher/node_modules/
 frontend/dist/
+launcher/dist/
+launcher/src-tauri/target/
 setup-api/.tmp/

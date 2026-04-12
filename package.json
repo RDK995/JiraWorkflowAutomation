@@ -3,12 +3,15 @@
   "private": true,
   "workspaces": [
     "frontend",
-    "setup-api"
+    "setup-api",
+    "launcher"
   ],
   "scripts": {
     "dev:frontend": "npm run dev --workspace frontend",
     "dev:setup-api": "npm run dev --workspace setup-api",
+    "dev:launcher": "npm run tauri:dev --workspace launcher",
     "build:frontend": "npm run build --workspace frontend",
+    "build:launcher": "npm run tauri:build --workspace launcher",
     "test:setup-api": "npm run test --workspace setup-api"
   }
 }

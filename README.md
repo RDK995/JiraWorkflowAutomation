@@ -94,6 +94,47 @@ The setup assistant code lives in:
 - `setup-api/`
 - `docs/setup-ui-plan.md`
 
+## PRonto Launcher
+
+For a friendlier local-first install experience, this repo now includes a small launcher app in `launcher/`.
+
+The launcher is designed to:
+
+- find the downloaded PRonto workspace on disk
+- start the local setup API
+- open the setup flow in your browser at `http://127.0.0.1:3010`
+
+Important notes:
+
+- The launcher expects the setup UI to be built already so the setup API can serve `frontend/dist`.
+- For release bundles, include the built frontend output alongside the launcher.
+
+Developer commands:
+
+```bash
+npm run build:frontend
+npm run dev:launcher
+```
+
+Build a packaged launcher:
+
+```bash
+npm run build:frontend
+npm run build:launcher
+```
+
+Release checklist for the launcher:
+
+1. Run `npm run build:frontend` so `frontend/dist` is present.
+2. Install launcher dependencies in `launcher/`.
+3. Build the native launcher bundle with `npm run build:launcher`.
+4. Place the launcher inside the distributed PRonto folder, or configure `PRONTO_WORKSPACE_ROOT`.
+5. Verify the bundled launcher can:
+   - find the PRonto workspace
+   - start the setup API
+   - open `http://127.0.0.1:3010`
+6. Test on a clean machine with only Docker Desktop and Node.js installed.
+
 ## 1) Configure environment
 
 ```bash

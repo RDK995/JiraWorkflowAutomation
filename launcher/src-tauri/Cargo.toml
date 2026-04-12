@@ -1,0 +1,14 @@
+[package]
+name = "pronto-launcher"
+version = "0.1.0"
+description = "PRonto local setup launcher"
+authors = ["PRonto"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
