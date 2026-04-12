@@ -116,9 +116,13 @@ prepare_target_repo() {
 
 run_with_progress_updates() {
   local label="$1"
-  shift
+  local workdir="$2"
+  shift 2
 
-  "$@" &
+  (
+    cd "${workdir}"
+    "$@"
+  ) &
   local command_pid=$!
 
   while kill -0 "${command_pid}" 2>/dev/null; do
@@ -172,13 +176,15 @@ EOF
 )
 
 if [[ "${AI_AGENT}" == "claude" ]]; then
+  read -r -a claude_exec_args <<< "${CLAUDE_EXEC_ARGS}"
   echo "Step 5 of 6: Handing the ticket to Claude Code."
   echo "Claude Code is reading the Jira brief, editing files, and running checks. This can take a few minutes."
-  run_with_progress_updates "Claude Code implementation workflow" bash -lc "cd \"${TARGET_DIR}\" && claude -p \"${AI_PROMPT}\" ${CLAUDE_EXEC_ARGS} --output-format text"
+  run_with_progress_updates "Claude Code implementation workflow" "${TARGET_DIR}" claude -p "${AI_PROMPT}" "${claude_exec_args[@]}" --output-format text
 elif [[ "${AI_AGENT}" == "codex" ]]; then
+  read -r -a codex_exec_args <<< "${CODEX_EXEC_ARGS}"
   echo "Step 5 of 6: Handing the ticket to Codex."
   echo "Codex is reading the Jira brief, editing files, and running checks. This can take a few minutes."
-  run_with_progress_updates "Codex implementation workflow" bash -lc "cd \"${TARGET_DIR}\" && codex exec ${CODEX_EXEC_ARGS} \"${AI_PROMPT}\""
+  run_with_progress_updates "Codex implementation workflow" "${TARGET_DIR}" codex exec "${codex_exec_args[@]}" "${AI_PROMPT}"
 else
   echo "Unknown AI_AGENT: ${AI_AGENT}. Supported values: codex, claude" >&2
   exit 1

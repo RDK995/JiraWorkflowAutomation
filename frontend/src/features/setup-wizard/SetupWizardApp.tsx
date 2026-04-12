@@ -62,6 +62,8 @@ function SetupWizardApp() {
   const [selectedDockerContext, setSelectedDockerContext] = useState("");
   const [copiedCodexCode, setCopiedCodexCode] = useState(false);
   const [isConsolePinnedToBottom, setIsConsolePinnedToBottom] = useState(true);
+  const [observedPullRequests, setObservedPullRequests] = useState<string[]>([]);
+  const [observedCodexDeviceLogin, setObservedCodexDeviceLogin] = useState<ReturnType<typeof extractCodexDeviceLogin>>(null);
   const [completedStepIndexes, setCompletedStepIndexes] = useState<number[]>([]);
   const [isNavigationLocked, setIsNavigationLocked] = useState(false);
   const [hasLaunchedThisSession, setHasLaunchedThisSession] = useState(false);
@@ -141,6 +143,21 @@ function SetupWizardApp() {
     return () => window.clearInterval(interval);
   }, [dockerBuildStartedAt, isCheckingDockerBuild]);
 
+  useEffect(() => {
+    if (!status) {
+      return;
+    }
+
+    if (status.createdPullRequests?.length) {
+      setObservedPullRequests((current) => Array.from(new Set([...current, ...status.createdPullRequests])));
+    }
+
+    const currentDeviceLogin = extractCodexDeviceLogin(status.logs || "");
+    if (currentDeviceLogin) {
+      setObservedCodexDeviceLogin(currentDeviceLogin);
+    }
+  }, [status]);
+
   const checkSetupApiReachability = async (): Promise<boolean> => {
     setIsCheckingSetupApi(true);
     setSetupApiError("");
@@ -210,12 +227,13 @@ function SetupWizardApp() {
   }, [config.CLAUDE_BOOTSTRAP_LOGIN, config.CLAUDE_DEVICE_LOGIN_ON_START]);
   const selectedAiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
   const integrationDisplayLabel = selectedAiAgent === "claude" ? "Claude Code" : "Codex";
+  const isNgrokEnabled = config.NGROK_ENABLE === "true";
 
   const reviewItems = useMemo(
     () => [
       ["Jira base URL", config.JIRA_BASE_URL || "Missing"],
       ["Jira user", config.JIRA_USER_EMAIL || "Missing"],
-      ["GitHub token", config.GITHUB_TOKEN ? "Configured" : "Missing"],
+      ["GitHub token", config.GITHUB_TOKEN || config.GH_TOKEN ? "Configured" : "Missing"],
       ["AI integration", integrationDisplayLabel],
       [
         "Integration auth",
@@ -226,16 +244,16 @@ function SetupWizardApp() {
               : "Persisted login"
       ],
       ["Base branch", config.WORKFLOW_BASE_BRANCH || "Missing"],
-      ["ngrok", "Enabled"]
+      ["ngrok", isNgrokEnabled ? "Enabled" : "Disabled"]
     ],
-    [claudeAuthMode, codexAuthMode, config, integrationDisplayLabel, selectedAiAgent]
+    [claudeAuthMode, codexAuthMode, config, integrationDisplayLabel, isNgrokEnabled, selectedAiAgent]
   );
   const configuredWebhookBaseUrl = useMemo(() => {
-    if (!config.NGROK_DOMAIN) {
+    if (!isNgrokEnabled || !config.NGROK_DOMAIN) {
       return "";
     }
     return `https://${config.NGROK_DOMAIN.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
-  }, [config.NGROK_DOMAIN]);
+  }, [config.NGROK_DOMAIN, isNgrokEnabled]);
   const configuredWebhookUrl = configuredWebhookBaseUrl ? `${configuredWebhookBaseUrl}/webhooks/jira-transition` : "";
 
   const launchSucceeded = Boolean(status?.docker.container.running);
@@ -1047,11 +1065,8 @@ function SetupWizardApp() {
   const currentStepHasPassingTest = currentStep.id in stepTestPassed
     ? stepTestPassed[currentStep.id as keyof typeof stepTestPassed]
     : true;
-  const createdPullRequests = useMemo(
-    () => status?.createdPullRequests || extractPullRequestUrls(status?.logs || ""),
-    [status?.createdPullRequests, status?.logs]
-  );
-  const codexDeviceLogin = useMemo(() => extractCodexDeviceLogin(status?.logs || ""), [status?.logs]);
+  const createdPullRequests = observedPullRequests;
+  const codexDeviceLogin = observedCodexDeviceLogin;
 
   const copyCodexCode = async () => {
     if (!codexDeviceLogin?.code) {
@@ -1822,7 +1837,8 @@ function SetupWizardApp() {
                       </ol>
                       <h4>Finish setup</h4>
                       <ol className="plain-list ordered">
-                        <li>Run <strong>Test Public Access</strong> before launch.</li>
+                        <li>Turn on public access if you want Jira to reach PRonto from the internet.</li>
+                        <li>Run <strong>Test Public Access</strong> before launch when ngrok is enabled.</li>
                         <li>After launch, use the ngrok URL plus <code>/webhooks/jira-transition</code> in Jira.</li>
                       </ol>
                       <p className="muted">
@@ -1833,6 +1849,7 @@ function SetupWizardApp() {
                 </>
               }
             >
+              <Toggle label="Enable ngrok in container" optional value={config.NGROK_ENABLE} onChange={(value) => updateField("NGROK_ENABLE", value)} error={errors.NGROK_ENABLE} />
               <Field label="ngrok authtoken" optional value={config.NGROK_AUTHTOKEN} onChange={(value) => updateField("NGROK_AUTHTOKEN", value)} error={errors.NGROK_AUTHTOKEN} secret />
               <Field label="ngrok API key" optional value={config.NGROK_API_KEY} onChange={(value) => updateField("NGROK_API_KEY", value)} error={errors.NGROK_API_KEY} secret />
               <Field label="ngrok reserved domain" optional value={config.NGROK_DOMAIN} onChange={(value) => updateField("NGROK_DOMAIN", value)} error={errors.NGROK_DOMAIN} placeholder="your-domain.ngrok-free.app" />
@@ -1893,9 +1910,22 @@ function SetupWizardApp() {
                 <p className="muted webhook-hero-copy">
                   This step gathers the exact webhook settings Jira needs before you move into the Launch Console.
                 </p>
+                {!isNgrokEnabled ? (
+                  <div className="guide-section guide-error-help">
+                    <h4>Public access is disabled</h4>
+                    <p className="muted">
+                      Jira cannot send webhooks to PRonto until public access is enabled. Go back to <strong>Public Access</strong>, turn on ngrok, and run the public access check before configuring the Jira webhook.
+                    </p>
+                  </div>
+                ) : null}
                 <div className="guide-section">
                   <h4>Webhook URL</h4>
-                  {configuredWebhookUrl ? (
+                  {!isNgrokEnabled ? (
+                    <div className="webhook-url-card">
+                      <span className="webhook-url-chip">Unavailable</span>
+                      <p className="muted">No public webhook URL is available while ngrok is disabled.</p>
+                    </div>
+                  ) : configuredWebhookUrl ? (
                     <div className="webhook-url-card is-ready">
                       <span className="webhook-url-chip">Ready now</span>
                       <p className="muted">A reserved ngrok domain is configured, so you can use this final webhook URL in Jira right now.</p>
@@ -1954,9 +1984,21 @@ function SetupWizardApp() {
                 <div className="guide-section">
                   <h4>Before you continue</h4>
                   <ol className="plain-list ordered webhook-side-list">
-                    <li>If you use a reserved ngrok domain, add the webhook URL in Jira now.</li>
-                    <li>If you use an ephemeral ngrok URL, continue to Launch Console, then copy the live URL into Jira after PRonto starts.</li>
-                    <li>After launch, use the webhook delivery test to confirm Jira can reach PRonto.</li>
+                    {!isNgrokEnabled ? (
+                      <li>Enable public access first so Jira has a public URL to call.</li>
+                    ) : (
+                      <li>If you use a reserved ngrok domain, add the webhook URL in Jira now.</li>
+                    )}
+                    {!isNgrokEnabled ? (
+                      <li>Run the public access check after enabling ngrok.</li>
+                    ) : (
+                      <li>If you use an ephemeral ngrok URL, continue to Launch Console, then copy the live URL into Jira after PRonto starts.</li>
+                    )}
+                    {!isNgrokEnabled ? (
+                      <li>Return here after public access is enabled and tested.</li>
+                    ) : (
+                      <li>After launch, use the webhook delivery test to confirm Jira can reach PRonto.</li>
+                    )}
                   </ol>
                 </div>
                 <div aria-hidden="true" style={{ height: "0.5rem" }} />
