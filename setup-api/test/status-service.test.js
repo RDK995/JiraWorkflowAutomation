@@ -83,6 +83,40 @@ test("getJiraWebhookDeliveryStatus posts a test webhook to the public ngrok url"
   assert.equal(calls[1].options.headers["x-jira-webhook-secret"], "secret");
 });
 
+test("getJiraWebhookDeliveryStatus prefers reserved ngrok domain from config over logs", async () => {
+  const calls = [];
+  const service = createStatusService({
+    getContainerLogsImpl: async () => ({ logs: "Tunnel established at https://wrong.ngrok-free.app" }),
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url === "http://127.0.0.1:3000/health") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: "ok" })
+        };
+      }
+      if (url === "https://reserved.ngrok-free.dev/webhooks/jira-transition") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ tested: true })
+        };
+      }
+      throw new Error(`Unexpected url: ${url}`);
+    }
+  });
+
+  const result = await service.getJiraWebhookDeliveryStatus({
+    NGROK_DOMAIN: "reserved.ngrok-free.dev",
+    READY_STATUS: "Ready",
+    IN_PROGRESS_STATUS: "In Progress"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[1].url, "https://reserved.ngrok-free.dev/webhooks/jira-transition");
+});
+
 test("getGitHubReadinessStatus reports missing token", async () => {
   const service = createStatusService();
   const result = await service.getGitHubReadinessStatus({});
@@ -256,6 +290,30 @@ test("getFullStatus combines config, docker, health, and logs", async () => {
   assert.equal(result.logs, "tail logs");
   assert.deepEqual(result.createdPullRequests, ["https://github.com/RDK995/ExampleFrontend/pull/5"]);
   assert.deepEqual(tails, [80, 400]);
+});
+
+test("getFullStatus deduplicates repeated pull request urls from extended logs", async () => {
+  const service = createStatusService({
+    readCurrentConfigImpl: async () => ({ exists: true, config: {} }),
+    getDockerStatusImpl: async () => ({ available: true, imageExists: true, container: { exists: true, running: true } }),
+    getContainerLogsImpl: async (tail) => ({
+      logs:
+        tail === 400
+          ? [
+              "https://github.com/RDK995/ExampleFrontend/pull/5",
+              "https://github.com/RDK995/ExampleFrontend/pull/5",
+              "https://github.com/RDK995/ExampleFrontend/pull/6"
+            ].join("\n")
+          : "console tail"
+    }),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: "ok" }) })
+  });
+
+  const result = await service.getFullStatus();
+  assert.deepEqual(result.createdPullRequests, [
+    "https://github.com/RDK995/ExampleFrontend/pull/5",
+    "https://github.com/RDK995/ExampleFrontend/pull/6"
+  ]);
 });
 
 test("getFullStatus skips container logs when the PRonto container does not exist yet", async () => {

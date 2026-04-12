@@ -2,6 +2,7 @@ import importlib
 import io
 import os
 import unittest
+import subprocess
 from unittest.mock import Mock, patch
 
 
@@ -171,6 +172,45 @@ class AppLogicTests(unittest.TestCase):
         self.assertIn("KAN-123", logged_messages)
         self.assertIn("Pull request created successfully", logged_messages)
         self.assertNotIn("noisy diff line", logged_messages)
+
+    def test_run_ai_workflow_logs_plain_english_git_progress_but_filters_low_signal_output(self):
+        process = Mock()
+        process.stdout = io.StringIO(
+            "GitHub rejected the first push because the remote branch moved. Retrying safely with force-with-lease.\n"
+            "GitHub branch push completed.\n"
+            "Creating the pull request against main.\n"
+            "Warning: 1 uncommitted change\n"
+            "tokens used\n"
+            "19876\n"
+        )
+        process.wait.return_value = 0
+
+        with patch("src.app.subprocess.Popen", return_value=process):
+            with patch.object(self.app_module.app.logger, "info") as log_mock:
+                with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
+                    self.app_module.run_ai_workflow("KAN-123")
+
+        logged_messages = " ".join(str(call.args) for call in log_mock.call_args_list)
+        self.assertIn("GitHub rejected the first push", logged_messages)
+        self.assertIn("GitHub branch push completed.", logged_messages)
+        self.assertIn("Creating the pull request against main.", logged_messages)
+        self.assertNotIn("Warning: 1 uncommitted change", logged_messages)
+        self.assertNotIn("tokens used", logged_messages)
+
+    def test_run_ai_workflow_times_out_and_kills_subprocess(self):
+        process = Mock()
+        process.stdout = io.StringIO("")
+        process.wait.side_effect = subprocess.TimeoutExpired(cmd="jira_ticket_to_pr.sh", timeout=10)
+
+        with patch("src.app.subprocess.Popen", return_value=process):
+            with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"), patch.object(
+                self.app_module, "WORKFLOW_TIMEOUT_SECONDS", 10
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    self.app_module.run_ai_workflow("KAN-123")
+
+        process.kill.assert_called_once()
+        self.assertIn("timed out after 10 seconds", str(ctx.exception))
 
 
 class AppRouteTests(unittest.TestCase):

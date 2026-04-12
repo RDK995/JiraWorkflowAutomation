@@ -17,7 +17,8 @@ test("validateConfig allows API key auth path", () => {
     JIRA_USER_EMAIL: "user@example.com",
     JIRA_API_TOKEN: "jira-token",
     GITHUB_TOKEN: "ghp_token",
-    CODEX_API_KEY: "sk-token"
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
   });
   assert.equal(result.isValid, true);
 });
@@ -28,7 +29,8 @@ test("validateConfig allows persisted Codex login when bootstrap login is disabl
     JIRA_USER_EMAIL: "user@example.com",
     JIRA_API_TOKEN: "jira-token",
     GITHUB_TOKEN: "ghp_token",
-    CODEX_BOOTSTRAP_LOGIN: "false"
+    CODEX_BOOTSTRAP_LOGIN: "false",
+    NGROK_ENABLE: "false"
   });
 
   assert.equal(result.isValid, true);
@@ -57,7 +59,8 @@ test("validateConfig allows persisted Claude login when Claude bootstrap is disa
     GITHUB_TOKEN: "ghp_token",
     AI_AGENT: "claude",
     CLAUDE_BOOTSTRAP_LOGIN: "false",
-    CLAUDE_DEVICE_LOGIN_ON_START: "false"
+    CLAUDE_DEVICE_LOGIN_ON_START: "false",
+    NGROK_ENABLE: "false"
   });
 
   assert.equal(result.isValid, true);
@@ -97,5 +100,23 @@ test("serializeEnv round-trips core values", () => {
 test("parseEnvFile strips surrounding quotes from values", () => {
   const parsed = parseEnvFile('READY_STATUS="To Do"\nCODEX_EXEC_ARGS="--full-auto"\n');
   assert.equal(parsed.READY_STATUS, "To Do");
+  assert.equal(parsed.CODEX_EXEC_ARGS, "--full-auto");
+});
+
+test("serializeEnv uses the Docker-safe Codex exec default", () => {
+  const envText = serializeEnv({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
+  });
+
+  assert.match(envText, /CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox/);
+});
+
+test("parseEnvFile preserves explicit legacy Codex exec args for existing environments", () => {
+  const parsed = parseEnvFile("CODEX_EXEC_ARGS=--full-auto\n");
   assert.equal(parsed.CODEX_EXEC_ARGS, "--full-auto");
 });
