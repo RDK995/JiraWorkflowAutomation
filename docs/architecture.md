@@ -20,7 +20,7 @@ sequenceDiagram
     Script->>Spec: Generate .codex/<KEY>.md from Jira issue
     Spec->>Jira: GET /rest/api/3/issue/{KEY}
     Script->>GitHub: Clone target repo + create jira/<KEY> branch
-    Script->>Codex: codex exec --full-auto "<prompt>"
+    Script->>Codex: codex exec --dangerously-bypass-approvals-and-sandbox "<prompt>"
     Codex->>GitHub: Commit/push changes
     Script->>GitHub: Create PR (gh pr create)
     Script->>App: Return output + PR URL
@@ -70,4 +70,3 @@ flowchart LR
     EP --> NG
     CodexCLI <--> Vol
 ```
-

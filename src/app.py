@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import base64
+import io
 import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -47,6 +49,17 @@ if missing:
     raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
 app = Flask(__name__)
+
+gunicorn_error_logger = logging.getLogger("gunicorn.error")
+if gunicorn_error_logger.handlers:
+    app.logger.handlers = gunicorn_error_logger.handlers
+    app.logger.propagate = False
+else:
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s in %(module)s: %(message)s"))
+    app.logger.handlers = [stream_handler]
+    app.logger.propagate = False
+
 app.logger.setLevel(logging.INFO)
 
 jira_auth_header = "Basic " + base64.b64encode(f"{JIRA_USER_EMAIL}:{JIRA_API_TOKEN}".encode("utf-8")).decode("utf-8")
@@ -130,18 +143,100 @@ def run_ai_workflow(issue_key: str) -> str:
     env = os.environ.copy()
     env["AI_AGENT"] = AI_AGENT
     app.logger.info("Executing workflow script (agent=%s): %s", AI_AGENT, " ".join(command))
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         command,
         cwd=str(REPO_ROOT),
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=WORKFLOW_TIMEOUT_SECONDS,
+        bufsize=1,
     )
-    combined = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-    if proc.returncode != 0:
+    output_lines: list[str] = []
+
+    def humanize_workflow_line(line: str) -> Optional[str]:
+        normalized = line.strip()
+        lowered = normalized.lower()
+
+        pr_match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+", normalized)
+        if pr_match:
+            return f"Pull request created successfully: {pr_match.group(0)}"
+
+        if normalized.startswith("Step "):
+            return normalized
+
+        if normalized.startswith("Codex is reading the Jira brief") or normalized.startswith("Claude Code is reading the Jira brief"):
+            return normalized
+
+        if normalized.endswith("is still running. PRonto is waiting for the AI tool to finish its work..."):
+            return normalized
+
+        if normalized.startswith("GitHub rejected the first push"):
+            return normalized
+
+        if normalized.startswith("Creating the pull request against"):
+            return normalized
+
+        if normalized == "GitHub branch push completed.":
+            return normalized
+
+        if normalized == "Pull request creation step finished.":
+            return normalized
+
+        if (
+            normalized.startswith("Could not determine target repo")
+            or normalized.startswith("GitHub CLI is not authenticated")
+            or normalized.startswith("Unknown AI_AGENT")
+            or normalized.startswith("Invalid github-repo value")
+            or normalized.startswith("error:")
+        ):
+            return normalized
+
+        if "failed" in lowered and "workflow failed" not in lowered:
+            return normalized
+
+        return None
+
+    def consume_output(stream: Optional[io.TextIOBase]) -> None:
+        if stream is None:
+            return
+        try:
+            for raw_line in iter(stream.readline, ""):
+                line = raw_line.rstrip()
+                if not line:
+                    continue
+                output_lines.append(line)
+                friendly_line = humanize_workflow_line(line)
+                if friendly_line:
+                    app.logger.info("workflow[%s]: %s", issue_key, friendly_line)
+        finally:
+            stream.close()
+
+    output_thread = threading.Thread(target=consume_output, args=(proc.stdout,), daemon=True)
+    output_thread.start()
+
+    try:
+        return_code = proc.wait(timeout=WORKFLOW_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        output_thread.join(timeout=2)
+        combined = "\n".join(output_lines)
         tail = "\n".join(combined.strip().splitlines()[-30:])
-        raise RuntimeError(f"{AI_AGENT_LABEL} workflow failed (exit {proc.returncode}).\n{tail}")
+        raise RuntimeError(
+            f"{AI_AGENT_LABEL} workflow timed out after {WORKFLOW_TIMEOUT_SECONDS} seconds.\n{tail}"
+        ) from exc
+
+    output_thread.join(timeout=2)
+    combined = "\n".join(output_lines)
+    if return_code != 0:
+        tail = "\n".join(combined.strip().splitlines()[-30:])
+        if "Blocked on environment access." in combined or "bwrap: No permissions to create a new namespace" in combined:
+            raise RuntimeError(
+                f"{AI_AGENT_LABEL} could not start inside the PRonto container because sandboxed exec mode is enabled.\n"
+                "Use CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox for Codex in Docker, then relaunch PRonto.\n"
+                f"{tail}"
+            )
+        raise RuntimeError(f"{AI_AGENT_LABEL} workflow failed (exit {return_code}).\n{tail}")
     return combined.strip()
 
 
@@ -211,17 +306,33 @@ def jira_transition() -> Any:
     status_item = next((item for item in body.get("changelog", {}).get("items", []) if item.get("field") == "status"), {})
     from_status = status_item.get("fromString")
     to_status = status_item.get("toString")
+    is_test_request = request.headers.get("x-pronto-webhook-test", "").lower() == "true"
     app.logger.info(
-        "Webhook received: issue=%s from=%s to=%s secret_header_present=%s",
+        "Webhook received: issue=%s from=%s to=%s secret_header_present=%s test_request=%s",
         issue_key,
         from_status,
         to_status,
         "x-jira-webhook-secret" in request.headers,
+        is_test_request,
     )
 
     if not has_valid_secret(request):
         app.logger.warning("Webhook rejected: invalid secret (issue=%s)", issue_key)
         return jsonify({"error": "Invalid webhook secret"}), 401
+
+    if is_test_request:
+        app.logger.info("Webhook test succeeded: issue=%s from=%s to=%s", issue_key, from_status, to_status)
+        return (
+            jsonify(
+                {
+                    "tested": True,
+                    "issueKey": issue_key,
+                    "fromStatus": from_status,
+                    "toStatus": to_status,
+                }
+            ),
+            200,
+        )
 
     if not was_transitioned_to_in_progress(body):
         app.logger.info(

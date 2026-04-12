@@ -17,7 +17,8 @@ test("validateConfig allows API key auth path", () => {
     JIRA_USER_EMAIL: "user@example.com",
     JIRA_API_TOKEN: "jira-token",
     GITHUB_TOKEN: "ghp_token",
-    CODEX_API_KEY: "sk-token"
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
   });
   assert.equal(result.isValid, true);
 });
@@ -28,7 +29,8 @@ test("validateConfig allows persisted Codex login when bootstrap login is disabl
     JIRA_USER_EMAIL: "user@example.com",
     JIRA_API_TOKEN: "jira-token",
     GITHUB_TOKEN: "ghp_token",
-    CODEX_BOOTSTRAP_LOGIN: "false"
+    CODEX_BOOTSTRAP_LOGIN: "false",
+    NGROK_ENABLE: "false"
   });
 
   assert.equal(result.isValid, true);
@@ -57,7 +59,8 @@ test("validateConfig allows persisted Claude login when Claude bootstrap is disa
     GITHUB_TOKEN: "ghp_token",
     AI_AGENT: "claude",
     CLAUDE_BOOTSTRAP_LOGIN: "false",
-    CLAUDE_DEVICE_LOGIN_ON_START: "false"
+    CLAUDE_DEVICE_LOGIN_ON_START: "false",
+    NGROK_ENABLE: "false"
   });
 
   assert.equal(result.isValid, true);
@@ -75,6 +78,20 @@ test("validateConfig requires ngrok authtoken when ngrok is enabled", () => {
 
   assert.equal(result.isValid, false);
   assert.equal(result.errors.NGROK_AUTHTOKEN, "ngrok authtoken is required when ngrok is enabled.");
+});
+
+test("validateConfig allows setup when ngrok is disabled", () => {
+  const result = validateConfig({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
+  });
+
+  assert.equal(result.isValid, true);
+  assert.equal(result.errors.NGROK_AUTHTOKEN, undefined);
 });
 
 test("serializeEnv round-trips core values", () => {
@@ -98,4 +115,67 @@ test("parseEnvFile strips surrounding quotes from values", () => {
   const parsed = parseEnvFile('READY_STATUS="To Do"\nCODEX_EXEC_ARGS="--full-auto"\n');
   assert.equal(parsed.READY_STATUS, "To Do");
   assert.equal(parsed.CODEX_EXEC_ARGS, "--full-auto");
+});
+
+test("serializeEnv uses the Docker-safe Codex exec default", () => {
+  const envText = serializeEnv({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
+  });
+
+  assert.match(envText, /CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox/);
+});
+
+test("serializeEnv preserves disabled ngrok state", () => {
+  const envText = serializeEnv({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
+  });
+
+  assert.match(envText, /NGROK_ENABLE=false/);
+});
+
+test("parseEnvFile preserves explicit legacy Codex exec args for existing environments", () => {
+  const parsed = parseEnvFile("CODEX_EXEC_ARGS=--full-auto\n");
+  assert.equal(parsed.CODEX_EXEC_ARGS, "--full-auto");
+});
+
+test("validateConfig rejects unsafe Codex exec args", () => {
+  const result = validateConfig({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false",
+    CODEX_EXEC_ARGS: '--sandbox "workspace-write"'
+  });
+
+  assert.equal(result.isValid, false);
+  assert.match(result.errors.CODEX_EXEC_ARGS, /plain space-separated Codex flags/i);
+});
+
+test("validateConfig rejects unsafe Claude exec args", () => {
+  const result = validateConfig({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    AI_AGENT: "claude",
+    CLAUDE_BOOTSTRAP_LOGIN: "false",
+    CLAUDE_DEVICE_LOGIN_ON_START: "false",
+    NGROK_ENABLE: "false",
+    CLAUDE_EXEC_ARGS: "--allowedTools Bash;rm"
+  });
+
+  assert.equal(result.isValid, false);
+  assert.match(result.errors.CLAUDE_EXEC_ARGS, /plain space-separated Claude flags/i);
 });

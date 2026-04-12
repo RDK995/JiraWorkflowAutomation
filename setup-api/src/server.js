@@ -5,9 +5,9 @@ import { pathToFileURL } from "node:url";
 
 import { validateConfig } from "./config.js";
 import { frontendDistPath } from "./paths.js";
-import { buildImage, getContainerLogs, listDockerContexts, openDockerDesktop, runContainer, startColima, stopContainer, switchDockerContext } from "./services/docker-service.js";
+import { buildImage, getCodexContainerAuthStatus, getContainerLogs, listDockerContexts, openDockerDesktop, resetDockerBuilderCache, runContainer, runDockerNetworkCheck, startColima, stopContainer, switchDockerContext } from "./services/docker-service.js";
 import { readCurrentConfig, saveConfig } from "./services/env-file.js";
-import { getCodexReadinessStatus, getDockerReadinessStatus, getFullStatus, getGitHubReadinessStatus, getHealthStatus, getJiraReadinessStatus, getNgrokReadinessStatus, getPrerequisiteChecks } from "./services/status-service.js";
+import { getCodexReadinessStatus, getDockerReadinessStatus, getFullStatus, getGitHubReadinessStatus, getHealthStatus, getJiraReadinessStatus, getJiraWebhookDeliveryStatus, getNgrokReadinessStatus, getPrerequisiteChecks } from "./services/status-service.js";
 
 const PORT = Number(process.env.SETUP_API_PORT || 3010);
 
@@ -71,10 +71,14 @@ export function createRequestListener(deps = {}) {
     getPrerequisiteChecksImpl = getPrerequisiteChecks,
     getDockerReadinessStatusImpl = getDockerReadinessStatus,
     getJiraReadinessStatusImpl = getJiraReadinessStatus,
+    getJiraWebhookDeliveryStatusImpl = getJiraWebhookDeliveryStatus,
     getGitHubReadinessStatusImpl = getGitHubReadinessStatus,
     getCodexReadinessStatusImpl = getCodexReadinessStatus,
     getNgrokReadinessStatusImpl = getNgrokReadinessStatus,
     buildImageImpl = buildImage,
+    runDockerNetworkCheckImpl = runDockerNetworkCheck,
+    resetDockerBuilderCacheImpl = resetDockerBuilderCache,
+    getCodexContainerAuthStatusImpl = getCodexContainerAuthStatus,
     startColimaImpl = startColima,
     openDockerDesktopImpl = openDockerDesktop,
     listDockerContextsImpl = listDockerContexts,
@@ -135,6 +139,12 @@ export function createRequestListener(deps = {}) {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/checks/jira-webhook-delivery") {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await getJiraWebhookDeliveryStatusImpl(body.config || body));
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/checks/github-readiness") {
         const body = await readJsonBody(request);
         sendJson(response, 200, await getGitHubReadinessStatusImpl(body.config || body));
@@ -147,6 +157,11 @@ export function createRequestListener(deps = {}) {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/checks/codex-container-auth") {
+        sendJson(response, 200, await getCodexContainerAuthStatusImpl());
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/checks/ngrok-readiness") {
         const body = await readJsonBody(request);
         sendJson(response, 200, await getNgrokReadinessStatusImpl(body.config || body));
@@ -155,6 +170,16 @@ export function createRequestListener(deps = {}) {
 
       if (request.method === "POST" && url.pathname === "/api/docker/build") {
         sendJson(response, 200, await buildImageImpl());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/docker/network-check") {
+        sendJson(response, 200, await runDockerNetworkCheckImpl());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/docker/reset-builder-cache") {
+        sendJson(response, 200, await resetDockerBuilderCacheImpl());
         return;
       }
 

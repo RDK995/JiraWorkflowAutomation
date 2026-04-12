@@ -28,6 +28,7 @@ export type StatusResponse = {
     payload?: Record<string, string>;
   };
   logs: string;
+  createdPullRequests: string[];
 };
 
 export type PrereqResponse = {
@@ -64,3 +65,11 @@ export type DockerContextResponse = {
   }>;
   output?: string;
 };
+
+export type DockerRecoveryResponse = {
+  ok: boolean;
+  output: string;
+  diagnosis?: ReadinessCheckResponse["diagnosis"];
+};
+
+export type DockerNetworkCheckResponse = ReadinessCheckResponse;

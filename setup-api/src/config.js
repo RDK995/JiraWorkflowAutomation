@@ -47,10 +47,10 @@ export const DEFAULT_CONFIG = {
   CLAUDE_BOOTSTRAP_LOGIN: "true",
   CLAUDE_DEVICE_LOGIN_ON_START: "true",
   WORKFLOW_BASE_BRANCH: "main",
-  CODEX_EXEC_ARGS: "--full-auto",
+  CODEX_EXEC_ARGS: "--dangerously-bypass-approvals-and-sandbox",
   ANTHROPIC_API_KEY: "",
   CLAUDE_EXEC_ARGS: "--allowedTools Bash,Edit,Write,Read",
-  NGROK_ENABLE: "false",
+  NGROK_ENABLE: "true",
   NGROK_AUTHTOKEN: "",
   NGROK_API_KEY: "",
   NGROK_DOMAIN: ""
@@ -93,6 +93,7 @@ export function normalizeConfig(input = {}) {
 export function validateConfig(input = {}) {
   const config = normalizeConfig(input);
   const errors = {};
+  const hasUnsafeExecArgChars = (value) => /["'`$;&|<>()\n\r\\]/.test(value || "");
 
   const requireField = (field, message) => {
     if (!config[field]) {
@@ -128,6 +129,9 @@ export function validateConfig(input = {}) {
     if (bootstrapLogin && !openAiToken && !deviceLogin) {
       errors.CODEX_API_KEY = "Provide an API key or enable device login on start.";
     }
+    if (hasUnsafeExecArgChars(config.CODEX_EXEC_ARGS)) {
+      errors.CODEX_EXEC_ARGS = "Use only plain space-separated Codex flags. Quotes and shell control characters are not supported here.";
+    }
   }
 
   if (config.AI_AGENT === "claude") {
@@ -135,6 +139,9 @@ export function validateConfig(input = {}) {
     const deviceLogin = config.CLAUDE_DEVICE_LOGIN_ON_START === "true";
     if (bootstrapLogin && !deviceLogin) {
       errors.CLAUDE_DEVICE_LOGIN_ON_START = "Enable Claude device login on start, or disable bootstrap login to use persisted login.";
+    }
+    if (hasUnsafeExecArgChars(config.CLAUDE_EXEC_ARGS)) {
+      errors.CLAUDE_EXEC_ARGS = "Use only plain space-separated Claude flags. Quotes and shell control characters are not supported here.";
     }
   }
 
