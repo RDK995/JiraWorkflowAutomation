@@ -35,10 +35,10 @@ flowchart LR
 
     subgraph Persisted
         Env[.env in workspace]
-        RepoCache[.codex/repos/*]
-        Briefs[.codex/<issue>.md]
-        CodexVol[/data/codex]
-        ClaudeVol[/data/claude]
+        RepoCache[Local repo cache]
+        Briefs[Generated issue briefs]
+        CodexVol[Codex auth volume]
+        ClaudeVol[Claude auth volume]
     end
 
     Jira[Jira Cloud] --> Flask

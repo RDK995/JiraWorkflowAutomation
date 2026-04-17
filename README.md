@@ -55,9 +55,9 @@ At runtime, PRonto is a webhook-driven orchestrator. The Flask app is intentiona
 flowchart LR
     Jira[Jira Cloud] -->|status transition webhook| Webhook[Flask automation service]
     Webhook -->|background thread| Workflow[jira_ticket_to_pr.sh]
-    Workflow --> Spec[tools/jira/jira_to_spec.py]
+    Workflow --> Spec[Jira spec generator]
     Spec -->|GET issue| Jira
-    Workflow --> RepoCache[.codex/repos/<target-repo>]
+    Workflow --> RepoCache[Local repo cache]
     Workflow --> AI[Codex CLI or Claude Code]
     Workflow --> GH[GitHub CLI]
     AI --> RepoCache
@@ -269,11 +269,11 @@ Primary state surfaces:
 flowchart LR
     Env[.env] --> Flask[Flask service]
     Env --> Entry[docker/entrypoint.sh]
-    Flask --> Brief[.codex/<ISSUE>.md]
-    Brief --> Repo[.codex/repos/<repo>]
+    Flask --> Brief[Generated issue brief]
+    Brief --> Repo[Local target repo clone]
     Repo --> PR[GitHub PR]
-    Entry --> CodexState[/data/codex]
-    Entry --> ClaudeState[/data/claude]
+    Entry --> CodexState[Codex auth volume]
+    Entry --> ClaudeState[Claude auth volume]
     DockerLogs[Container logs] --> SetupUI[Setup wizard]
 ```
 
