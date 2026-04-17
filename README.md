@@ -1,103 +1,321 @@
-# Jira Workflow Automation
+# PRonto
 
-Webhook service (Dockerized) that listens for Jira status transitions and runs a Codex CLI workflow to:
+Jira-driven engineering workflow automation with a guided local setup experience.
 
-1. Pull Jira issue details.
-2. Generate an implementation spec.
-3. Clone/select the target GitHub repo from the ticket.
-4. Ask Codex to implement and commit changes.
-5. Push branch + create PR.
-6. Comment result back on the Jira issue.
+## Overview
 
-## Visualizations
+PRonto watches for a specific Jira workflow transition, turns the Jira ticket into an implementation brief, invokes an AI coding CLI inside a Docker container, pushes the resulting branch to GitHub, opens or updates a pull request, and reports the outcome back to Jira.
 
-- Full diagrams: [docs/architecture.md](docs/architecture.md)
+Today the repository contains three layers:
 
-### Workflow Diagram
+- A Python automation service that receives Jira webhooks and orchestrates the workflow.
+- A Node-based setup API plus React setup wizard that helps a user configure `.env`, validate external integrations, build the Docker image, and launch the container.
+- A small Tauri launcher that starts the setup flow as a desktop-friendly entrypoint.
 
-```mermaid
-sequenceDiagram
-    participant Jira as Jira
-    participant App as Automation Service
-    participant Script as jira_ticket_to_pr.sh
-    participant Codex as Codex CLI
-    participant GitHub as GitHub
+The repo is best understood as a local-first developer tool rather than a multi-tenant SaaS service. The core workflow is real and implemented; the surrounding setup experience is actively being built out to make onboarding less manual.
 
-    Jira->>App: Webhook: To Do -> In Progress
-    App->>Script: Start workflow for issue key
-    Script->>Codex: Implement from Jira spec
-    Codex->>GitHub: Commit + push
-    Script->>GitHub: Create PR
-    App->>Jira: Comment PR URL / error
-```
+## What It Does
 
-### Architecture Diagram
+### Implemented
+
+- Receives Jira transition webhooks at `POST /webhooks/jira-transition`.
+- Filters webhooks so automation only runs on `READY_STATUS -> IN_PROGRESS_STATUS`.
+- Validates an optional shared webhook secret.
+- Generates a Markdown implementation brief from the Jira issue using Jira REST APIs.
+- Detects the target GitHub repository from Jira fields or description text.
+- Clones or reuses a local checkout of that target repository under `.codex/repos/`.
+- Creates a working branch named `jira/<ISSUE_KEY>` from the configured base branch.
+- Invokes either `codex` or `claude` CLI to implement the ticket in the target repository.
+- Pushes the branch, creates or updates a PR with `gh`, and extracts the PR URL.
+- Transitions the Jira issue to `IN_REVIEW_STATUS` when a PR is created.
+- Posts success or failure comments back to Jira.
+- Provides a setup UI that can validate Jira, GitHub, OpenAI/Codex, ngrok, Docker, and container health.
+- Provides Docker diagnostics including context selection, Colima helpers, network checks, builder-cache reset, image build, container run, health polling, and log viewing.
+- Provides a Tauri launcher that finds the workspace, starts the setup API, and opens the setup flow in a browser.
+
+### Partially Implemented
+
+- The setup experience is broad and useful, but still depends on local conventions like Docker, Node, built frontend assets, and CLI tools already being available.
+- Claude support exists in the automation path, but most user-facing naming and readiness surfaces are still centered on Codex.
+- The setup API serves the built frontend directly in packaged mode, but the frontend and backend are still coupled by convention rather than a formal API versioning strategy.
+- Architecture documentation existed before this rewrite, but some older docs and examples no longer match the current defaults exactly.
+
+### Planned Or Implied
+
+- A more polished packaged distribution story where non-technical users do not need to know about Docker, Node, or built frontend artifacts.
+- Stronger persistence and historical run tracking beyond container logs.
+- More robust queueing and concurrency controls for webhook-triggered jobs.
+- Broader end-to-end integration coverage against live Jira, GitHub, AI, and ngrok environments.
+
+## Architecture
+
+At runtime, PRonto is a webhook-driven orchestrator. The Flask app is intentionally thin: it validates the webhook, starts a background thread, and delegates the actual repo manipulation to a shell workflow. The shell workflow is where repository checkout, AI invocation, git push, and PR creation happen. Around that, the setup UI helps users produce a valid `.env`, diagnose local Docker problems, and launch the container safely.
 
 ```mermaid
 flowchart LR
-    Jira[Jira Cloud] --> Ngrok[ngrok]
-    Ngrok --> App[Flask app.py]
-    App --> Workflow[jira_ticket_to_pr.sh]
-    Workflow --> JiraSpec[tools/jira/jira_to_spec.py]
-    Workflow --> Codex[Codex CLI]
+    Jira[Jira Cloud] -->|status transition webhook| Webhook[Flask automation service]
+    Webhook -->|background thread| Workflow[jira_ticket_to_pr.sh]
+    Workflow --> Spec[tools/jira/jira_to_spec.py]
+    Spec -->|GET issue| Jira
+    Workflow --> RepoCache[.codex/repos/<target-repo>]
+    Workflow --> AI[Codex CLI or Claude Code]
     Workflow --> GH[GitHub CLI]
-    Codex --> Repo[GitHub Repo + PR]
-    GH --> Repo
+    AI --> RepoCache
+    GH --> GitHub[GitHub repository + pull request]
+    Webhook -->|comment + transition| Jira
+
+    User[Developer] --> SetupUI[React setup wizard]
+    SetupUI --> SetupAPI[Node setup API]
+    SetupAPI --> Env[.env]
+    SetupAPI --> Docker[Local Docker engine]
+    Docker --> Webhook
+    Launcher[Tauri launcher] --> SetupAPI
 ```
 
-## Prerequisites
+Architectural boundaries:
 
-- Docker
-- Jira Cloud project + API token
-- GitHub repo access + Personal Access Token (PAT)
-- ngrok account (recommended for local webhook exposure)
-- OpenAI/Codex access:
-  - `CODEX_API_KEY`/`OPENAI_API_KEY`, or
-  - interactive `codex login` persisted in Docker volume
+- `src/` owns webhook handling and Jira-side orchestration.
+- `jira_ticket_to_pr.sh` owns repo preparation, AI execution, and PR creation.
+- `tools/jira/` owns Jira-to-spec translation.
+- `setup-api/` owns local machine checks, `.env` management, Docker control, and status aggregation.
+- `frontend/` owns the guided onboarding and launch console UX.
+- `launcher/` owns the desktop wrapper around the setup experience.
 
-## Setup Assistant (Phase 1)
+## Core Flows
 
-Phase 1 now includes a React onboarding frontend plus a local setup API so a new user can configure `.env`, build the Docker image, start the container, and inspect logs from a guided UI.
+### 1. Jira Transition To Pull Request
 
-Install workspace dependencies:
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Jira as Jira Cloud
+    participant App as Flask app
+    participant Worker as Background thread
+    participant Script as jira_ticket_to_pr.sh
+    participant Spec as jira_to_spec.py
+    participant AI as Codex / Claude
+    participant GH as GitHub CLI
+
+    Jira->>App: POST /webhooks/jira-transition
+    App->>App: Validate secret and transition
+    App->>Worker: enqueue_automation(issueKey)
+    Worker->>Script: run workflow script
+    Script->>Spec: generate issue brief
+    Spec->>Jira: fetch issue data
+    Script->>Script: clone/fetch target repo and create jira/<KEY> branch
+    Script->>AI: implement changes and run checks
+    AI-->>Script: commit changes
+    Script->>GH: push branch and create/edit PR
+    GH-->>Script: PR URL
+    Worker->>Jira: move issue to In Review + comment result
+```
+
+Important characteristics:
+
+- The webhook request returns quickly with `202 Accepted`; work continues on a daemon thread.
+- The workflow is synchronous after kickoff. There is no external queue, job table, or retry subsystem.
+- Success is inferred primarily from process exit code and whether a PR URL appears in workflow output.
+
+### 2. Setup And Launch Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as Developer
+    participant UI as React setup wizard
+    participant API as setup-api
+    participant Docker as Docker CLI
+    participant Container as PRonto container
+
+    User->>UI: Enter config and run checks
+    UI->>API: Save and validate config
+    API->>API: Write .env and preserve unknown keys
+    UI->>API: Run readiness checks
+    API->>Docker: version/context/build/network commands
+    UI->>API: Build image and run container
+    API->>Docker: docker build / rm / run
+    API->>Container: poll logs and /health
+    Container-->>UI: health + console output
+```
+
+### 3. Jira Spec Generation
+
+```mermaid
+flowchart TD
+    Issue[Jira issue JSON] --> Desc[Flatten ADF description]
+    Issue --> Meta[Summary, issue type, priority]
+    Desc --> AC[Heuristic acceptance-criteria extraction]
+    Desc --> Repo[Repository detection from fields or description]
+    Meta --> Brief[Generated Markdown brief]
+    AC --> Brief
+    Repo --> Brief
+```
+
+The generated brief is the contract between Jira and the AI tool. It is intentionally lightweight and stored under `.codex/<ISSUE_KEY>.md`, then copied into the target repository before the AI CLI runs.
+
+## Repository Structure
+
+The repo contains one automation product and two operator-facing shells around it.
+
+```text
+src/                 Flask webhook service and Jira-side orchestration
+tools/jira/          Jira issue -> Markdown implementation brief conversion
+docker/              Container entrypoint and runtime bootstrap logic
+setup-api/           Local setup/control plane for env, Docker, readiness, logs
+frontend/            React onboarding and launch console
+launcher/            Tauri desktop wrapper for the setup flow
+tests/               Python unit tests for webhook app and Jira spec generation
+docs/                Legacy architecture notes
+scripts/             Ad hoc integration helpers
+```
+
+How to read it efficiently:
+
+1. Start with [`src/app.py`](/Users/ryankenny/Projects/JiraWorkflowAutomation/src/app.py:1) for the webhook contract and orchestration lifecycle.
+2. Move to [`jira_ticket_to_pr.sh`](/Users/ryankenny/Projects/JiraWorkflowAutomation/jira_ticket_to_pr.sh:1) for the real automation workflow.
+3. Read [`tools/jira/jira_to_spec.py`](/Users/ryankenny/Projects/JiraWorkflowAutomation/tools/jira/jira_to_spec.py:1) to understand what the AI tool actually receives.
+4. Read [`setup-api/src/server.js`](/Users/ryankenny/Projects/JiraWorkflowAutomation/setup-api/src/server.js:1) and the services under `setup-api/src/services/` for local setup, launch, and diagnostics.
+5. Read [`frontend/src/features/setup-wizard/SetupWizardApp.tsx`](/Users/ryankenny/Projects/JiraWorkflowAutomation/frontend/src/features/setup-wizard/SetupWizardApp.tsx:1) for the operator experience.
+6. Read [`launcher/src-tauri/src/main.rs`](/Users/ryankenny/Projects/JiraWorkflowAutomation/launcher/src-tauri/src/main.rs:1) only if you care about the packaged launcher flow.
+
+## Key Modules
+
+### Automation Service
+
+- [`src/app.py`](/Users/ryankenny/Projects/JiraWorkflowAutomation/src/app.py:1)
+  - Loads environment, validates required Jira credentials at import time, and exposes the Flask app.
+  - Implements `/health`.
+  - Implements `/webhooks/jira-transition`.
+  - Starts background automation threads with `enqueue_automation`.
+  - Posts Jira comments and performs Jira status transitions.
+  - Streams workflow stdout, keeps high-signal lines, and turns them into human-readable logs.
+
+### Workflow Script
+
+- [`jira_ticket_to_pr.sh`](/Users/ryankenny/Projects/JiraWorkflowAutomation/jira_ticket_to_pr.sh:1)
+  - Generates the Jira brief.
+  - Resolves the target repo from explicit input or the brief.
+  - Clones or refreshes the repo under `.codex/repos/`.
+  - Creates the branch and dispatches to either `codex` or `claude`.
+  - Pushes with a retry path using `--force-with-lease`.
+  - Creates or updates the PR body from the generated brief plus automation metadata.
+
+### Jira Spec Generator
+
+- [`tools/jira/jira_to_spec.py`](/Users/ryankenny/Projects/JiraWorkflowAutomation/tools/jira/jira_to_spec.py:1)
+  - Fetches the Jira issue via REST.
+  - Flattens Atlassian Document Format into readable Markdown-ish text.
+  - Heuristically extracts acceptance criteria.
+  - Detects the target repository from fields, description conventions, or GitHub URLs.
+
+### Setup API
+
+- [`setup-api/src/server.js`](/Users/ryankenny/Projects/JiraWorkflowAutomation/setup-api/src/server.js:1)
+  - Hosts a lightweight HTTP API and also serves the built frontend.
+  - Exposes endpoints for config validation, `.env` save/read, readiness checks, Docker build/run/stop, logs, and health.
+
+- [`setup-api/src/config.js`](/Users/ryankenny/Projects/JiraWorkflowAutomation/setup-api/src/config.js:1)
+  - Defines supported config fields and defaults.
+  - Validates auth modes, required fields, and safe CLI arg input.
+  - Serializes `.env` content.
+
+- [`setup-api/src/services/docker-service.js`](/Users/ryankenny/Projects/JiraWorkflowAutomation/setup-api/src/services/docker-service.js:1)
+  - Encapsulates all Docker and Colima interactions.
+  - Contains the project’s richest operational diagnostics.
+
+- [`setup-api/src/services/status-service.js`](/Users/ryankenny/Projects/JiraWorkflowAutomation/setup-api/src/services/status-service.js:1)
+  - Performs external API checks against Jira, GitHub, OpenAI, and ngrok.
+  - Aggregates container health, logs, and PR discovery for the frontend.
+
+### Frontend Setup Wizard
+
+- [`frontend/src/features/setup-wizard/SetupWizardApp.tsx`](/Users/ryankenny/Projects/JiraWorkflowAutomation/frontend/src/features/setup-wizard/SetupWizardApp.tsx:1)
+  - Implements the full onboarding flow: welcome, system check, Jira, GitHub, AI integration, ngrok, webhook, review, and launch console.
+  - Maintains config state and drives readiness checks against the setup API.
+  - Shows container logs, health, observed PR URLs, and device-login cues.
+
+### Launcher
+
+- [`launcher/src-tauri/src/main.rs`](/Users/ryankenny/Projects/JiraWorkflowAutomation/launcher/src-tauri/src/main.rs:1)
+  - Finds the PRonto workspace.
+  - Verifies Node and `frontend/dist` are present.
+  - Starts the setup API if needed and opens `http://127.0.0.1:3010`.
+
+## Data and State Model
+
+The project is mostly file- and process-driven. There is no application database.
+
+Primary state surfaces:
+
+- `.env`
+  - Source of truth for runtime configuration.
+  - Managed manually or through the setup UI.
+  - The setup API preserves unknown keys when rewriting the file.
+
+- `.codex/<ISSUE_KEY>.md`
+  - Generated issue brief that captures Jira context, acceptance criteria, target repository, and implementation instructions.
+
+- `.codex/repos/<owner-repo>/`
+  - Local clone cache for target repositories used by the automation workflow.
+
+- Docker volumes
+  - `/data/codex` and `/data/claude` persist AI CLI login/session state across container restarts.
+
+- Container logs
+  - Act as the main execution history and debugging source.
+  - The setup UI mines logs for PR URLs and ngrok URLs.
+
+```mermaid
+flowchart LR
+    Env[.env] --> Flask[Flask service]
+    Env --> Entry[docker/entrypoint.sh]
+    Flask --> Brief[.codex/<ISSUE>.md]
+    Brief --> Repo[.codex/repos/<repo>]
+    Repo --> PR[GitHub PR]
+    Entry --> CodexState[/data/codex]
+    Entry --> ClaudeState[/data/claude]
+    DockerLogs[Container logs] --> SetupUI[Setup wizard]
+```
+
+A few important implications:
+
+- Configuration changes are coarse-grained and restart-oriented.
+- Workflow history is not normalized into structured records.
+- The brief is a first-class artifact and a good debugging anchor when automation behavior looks wrong.
+
+## Running the Project
+
+### Option 1: Use The Setup Wizard
+
+From the repo root:
 
 ```bash
 npm install
-```
-
-Start the local setup API:
-
-```bash
 npm run dev:setup-api
 ```
 
-Start the React frontend in a second terminal:
+In a second terminal:
 
 ```bash
 npm run dev:frontend
 ```
 
-Open the Vite URL shown in the terminal, usually `http://localhost:5173`.
+Open the Vite URL, usually `http://localhost:5173`.
 
-What the setup assistant does:
+This is the best path if you want guided config editing, Docker diagnostics, readiness checks, and a launch console.
 
-- Captures Jira, GitHub, Codex, and optional ngrok config
-- Writes `.env` for the project
-- Runs `docker build -t jira-workflow-automation .`
-- Replaces and starts the `jira-automation` container
-- Polls `http://localhost:3000/health`
-- Shows recent container logs in the UI
+### Option 2: Run The Automation Service Directly In Docker
 
-The setup assistant code lives in:
-
-- `frontend/`
-- `setup-api/`
-- `docs/setup-ui-plan.md`
-
-## 1) Configure environment
+Create `.env` from the example and fill in Jira, GitHub, and AI credentials:
 
 ```bash
 cp .env.example .env
+docker build -t jira-workflow-automation .
+docker rm -f jira-automation 2>/dev/null || true
+docker run --env-file .env -p 3000:3000 \
+  -v codex-state:/data/codex \
+  -v claude-state:/data/claude \
+  --name jira-automation -d jira-workflow-automation
 ```
 
 Set these required values in `.env`:
@@ -152,102 +370,175 @@ Optional but recommended:
 ## 2) Build and run
 
 ```bash
-docker build -t jira-workflow-automation .
-docker rm -f jira-automation 2>/dev/null || true
-docker run --env-file .env -p 3000:3000 -v codex-state:/data/codex --name jira-automation -d jira-workflow-automation
-```
-
-Logs:
-
-```bash
+curl -sS http://localhost:3000/health
 docker logs -f jira-automation
 ```
 
-Healthcheck:
+### Option 3: Use The Launcher
+
+The launcher expects `frontend/dist` to already exist:
 
 ```bash
-curl -sS http://localhost:3000/health
+npm install
+npm run build:frontend
+npm run dev:launcher
 ```
 
-## 3) Configure ngrok webhook endpoint
-
-If `NGROK_ENABLE=true`, the container starts ngrok and logs the URL/domain.
-
-Read ngrok tunnel info:
+For a packaged build:
 
 ```bash
-docker exec jira-automation sh -lc "wget -qO- http://127.0.0.1:4040/api/tunnels"
+npm run build:frontend
+npm run build:launcher
 ```
 
-Webhook URL to use in Jira:
+## Development Workflow
 
-- Reserved domain: `https://<NGROK_DOMAIN>/webhooks/jira-transition`
-- Ephemeral domain: `https://<generated-domain>/webhooks/jira-transition`
+Where to start depends on what you are changing:
 
-## 4) Configure Jira webhook
+- Webhook behavior: start in `src/app.py`.
+- AI workflow behavior: start in `jira_ticket_to_pr.sh`.
+- Jira brief quality: start in `tools/jira/jira_to_spec.py`.
+- Local setup and launch behavior: start in `setup-api/`.
+- Onboarding UX: start in `frontend/`.
+- Packaged desktop launch: start in `launcher/`.
 
-In Jira Cloud:
+Practical workflow:
 
-1. Go to `Settings -> System -> Webhooks`.
-2. Create a webhook.
-3. URL: `https://<public-url>/webhooks/jira-transition`
-4. Events: select `Issue updated` (or transition event if your Jira UI presents transition triggers).
-5. JQL filter:
+1. Update `.env` or use the setup wizard to generate it.
+2. Run unit tests for the part you touched.
+3. If you changed container/runtime behavior, rebuild and relaunch the Docker image.
+4. Use the setup wizard or `docker logs` to inspect live behavior.
+5. Treat the generated issue brief and container logs as the fastest debugging artifacts.
 
-```text
-project = KAN AND status CHANGED FROM "To Do" TO "In Progress"
-```
+Subsystem boundary rules of thumb:
 
-6. If using a secret:
-  - Set the same value in Jira webhook secret and `.env` (`JIRA_WEBHOOK_SECRET`).
-  - If no secret is set in Jira, keep `JIRA_WEBHOOK_SECRET=` empty.
+- Keep Jira API semantics out of the frontend.
+- Keep Docker/OS-level concerns in `setup-api`, not in the Flask app.
+- Keep AI prompting and git orchestration inside the workflow script unless there is a strong reason to move them.
+- Keep the Flask layer thin and stateless.
 
-## 4.1) Verify external credentials before first transition
+## Testing
 
-Run these checks before moving a Jira ticket:
+There are two main unit-test suites today.
+
+- Python `unittest` tests under `tests/`
+  - Cover webhook transition filtering, Jira comment/transition behavior, workflow error handling, timeout handling, and Jira spec parsing.
+
+- Node `node:test` tests under `setup-api/test/`
+  - Cover config validation, `.env` serialization and preservation, HTTP routing, Docker diagnostics, Docker run/build commands, and status-service behavior.
+
+Run them with:
 
 ```bash
-docker exec -it jira-automation sh -lc "gh auth status -h github.com"
-docker exec -it jira-automation sh -lc "codex --version"
-docker exec -it jira-automation sh -lc "python3 scripts/test_integrations.py"
+python -m unittest discover -s tests
+npm run test:setup-api
 ```
 
-Expected:
+Confidence level:
 
-- GitHub auth shows logged-in status.
-- Codex CLI is installed and login status passes.
-- Jira integration check passes with your Jira account details.
+- Good confidence on pure logic in the Flask app, Jira spec generation, and setup-api services.
+- Moderate confidence on the shape of Docker command orchestration.
+- Lower confidence on full end-to-end behavior across Jira, GitHub, ngrok, Docker, and AI CLIs because those are mostly mocked in tests.
 
-## 5) Jira ticket template required for automation
+Biggest testing gaps:
 
-The ticket description must include target repo:
+- No end-to-end test that exercises a real webhook through to PR creation.
+- No frontend component or browser tests.
+- No launcher tests.
+- No structured regression suite around the shell workflow script itself.
 
-```text
-GitHub Repo: your-org/your-repo
+## Observability / Debugging
 
-Context:
-<problem context>
+PRonto is primarily observable through logs and readiness checks.
 
-Acceptance Criteria:
-- <criterion 1>
-- <criterion 2>
+- Flask logs:
+  - Webhook receipt, skip reasons, workflow lifecycle, and filtered high-signal subprocess output.
+
+- Setup wizard launch console:
+  - Shows recent container logs, container health, and discovered PR URLs.
+
+- Setup API readiness endpoints:
+  - Validate Jira, GitHub, OpenAI/Codex, ngrok, Docker, and local health independently.
+
+- Container state:
+  - `docker logs`, `docker ps`, and `curl http://localhost:3000/health` are the core operational loop.
+
+- Generated brief:
+  - `.codex/<ISSUE_KEY>.md` is often the fastest place to verify whether Jira context was interpreted correctly.
+
+## Current Limitations
+
+- Automation jobs run in daemon threads inside the Flask process. There is no durable queue, retry engine, or run history store.
+- The workflow relies heavily on shelling out to external CLIs: `git`, `gh`, `codex`, `claude`, `ngrok`, and `docker`.
+- The setup wizard is useful, but it is still effectively an operator console over local machine state rather than a sealed installer.
+- The main runtime has no persistence beyond volumes, clone cache, `.env`, and logs.
+- Error handling is strongest around configuration and local diagnostics; it is weaker around distributed recovery after partial workflow success.
+- Older docs and `.env.example` defaults do not always line up perfectly with the latest Docker-safe recommendations.
+
+## Suggested Next Steps
+
+1. Add a durable run model with job IDs, status tracking, timestamps, and structured logs.
+2. Move workflow execution behind a proper queue/worker boundary instead of daemon threads in Flask.
+3. Add end-to-end integration coverage for a happy-path Jira -> PR workflow.
+4. Add browser-level tests for the setup wizard and smoke tests for the launcher.
+5. Normalize configuration docs and examples so `.env.example`, setup defaults, Docker defaults, and README guidance always match.
+
+## Appendix: Visual Diagrams
+
+### Subsystem Boundary View
+
+```mermaid
+flowchart TB
+    subgraph OperatorExperience
+        Launcher[Tauri launcher]
+        UI[React setup wizard]
+        API[Node setup API]
+    end
+
+    subgraph AutomationRuntime
+        Flask[Flask webhook app]
+        Script[Shell workflow]
+        Spec[Jira spec generator]
+    end
+
+    subgraph ExternalSystems
+        Jira[Jira]
+        GitHub[GitHub]
+        AI[Codex / Claude]
+        Ngrok[ngrok]
+        Docker[Docker]
+    end
+
+    Launcher --> API
+    UI --> API
+    API --> Docker
+    Docker --> Flask
+    Jira --> Ngrok
+    Ngrok --> Flask
+    Flask --> Script
+    Script --> Spec
+    Spec --> Jira
+    Script --> AI
+    Script --> GitHub
+    Flask --> Jira
 ```
 
-Example ticket:
+### Local Setup Control Plane
 
-- Key: `KAN-123`
-- Summary: `Add validation for webhook secret header`
-- Transition trigger: `To Do -> In Progress`
+```mermaid
+flowchart LR
+    UI[Setup wizard] -->|HTTP| API[setup-api]
+    API --> Config[config.js]
+    API --> EnvSvc[env-file service]
+    API --> DockerSvc[docker-service]
+    API --> StatusSvc[status-service]
+    EnvSvc --> Env[.env]
+    DockerSvc --> Docker[Docker CLI]
+    StatusSvc --> Jira[Jira API]
+    StatusSvc --> GitHub[GitHub API]
+    StatusSvc --> OpenAI[OpenAI API]
+    StatusSvc --> Ngrok[ngrok API]
+    StatusSvc --> Docker
+```
 
-## 6) First test flow
-
-1. Move a test issue from `To Do` to `In Progress`.
-2. Watch logs: `docker logs -f jira-automation`
-3. Confirm sequence:
-  - webhook accepted
-  - Jira spec generated
-  - repo cloned/branch created
-  - Codex run
-  - push + PR creation
-  - Jira comment posted with PR URL or error
-  - issue automatically transitioned to `In Review` when PR is created
+For deeper implementation detail, see [ARCHITECTURE.md](ARCHITECTURE.md). For the shortest practical setup path, see [QUICKSTART.md](QUICKSTART.md).
