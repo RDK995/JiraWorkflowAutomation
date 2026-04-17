@@ -169,6 +169,218 @@ export function createDockerService({
     };
   }
 
+  function classifyColimaStartIssue(output) {
+    const normalized = (output || "").trim();
+    const lowered = normalized.toLowerCase();
+
+    if (!normalized || lowered.includes("already running")) {
+      return {
+        ok: true,
+        output: normalized || "Colima is already running."
+      };
+    }
+
+    if (lowered.includes("command not found") || lowered.includes("enoent")) {
+      return {
+        ok: false,
+        output: "Colima is not installed on this machine. Install Colima or switch Docker to Docker Desktop from the setup UI.",
+        diagnosis: {
+          code: "colima_not_installed",
+          title: "Colima is not installed",
+          message: "Docker is pointing at Colima, but the Colima CLI is not installed yet. Install Colima or switch Docker to another runtime.",
+          platform,
+          runtime: "colima",
+          context: "colima"
+        }
+      };
+    }
+
+    if (lowered.includes("broken")) {
+      return {
+        ok: false,
+        output: "The Colima profile looks broken. Recreate it or switch Docker to another context before continuing.",
+        diagnosis: {
+          code: "colima_broken",
+          title: "Colima profile is broken",
+          message: "The Colima profile looks broken. Recreate it or switch Docker to a different context before continuing.",
+          platform,
+          runtime: "colima",
+          context: "colima"
+        }
+      };
+    }
+
+    if (lowered.includes("vz") || lowered.includes("virtualization") || lowered.includes("vmnet")) {
+      return {
+        ok: false,
+        output: "Colima could not initialize its VM. If this keeps happening, use Docker Desktop or repair the local Colima VM setup and retry.",
+        diagnosis: {
+          code: "colima_vm_config_error",
+          title: "Colima could not start its VM",
+          message: "Colima could not initialize its local VM. This usually means macOS virtualization support or Colima's VM configuration needs attention.",
+          platform,
+          runtime: "colima",
+          context: "colima"
+        }
+      };
+    }
+
+    return {
+      ok: false,
+      output: "Colima failed to start. Retry from this screen, or switch Docker to another runtime if Colima remains unavailable.",
+      diagnosis: {
+        code: "colima_start_failed",
+        title: "Colima did not start",
+        message: "Colima failed to start. Review the command output below, then retry or switch Docker to another context.",
+        platform,
+        runtime: "colima",
+        context: "colima"
+      }
+    };
+  }
+
+  function classifyDockerDesktopOpenIssue(output) {
+    const normalized = (output || "").trim();
+    const lowered = normalized.toLowerCase();
+
+    if (!normalized) {
+      return {
+        ok: false,
+        output: "Docker Desktop could not be opened from PRonto. Launch it manually or reinstall it, then retry.",
+        diagnosis: {
+          code: "docker_desktop_open_failed",
+          title: "Docker Desktop did not open",
+          message: "PRonto could not open Docker Desktop automatically. Launch it manually or reinstall it, then retry.",
+          platform,
+          runtime: "docker"
+        }
+      };
+    }
+
+    if (lowered.includes("unable to find application named") || lowered.includes("application isn’t running") || lowered.includes("does not exist")) {
+      return {
+        ok: false,
+        output: "Docker Desktop does not appear to be installed in Applications. Install Docker Desktop from the setup UI, then retry.",
+        diagnosis: {
+          code: "docker_desktop_not_installed",
+          title: "Docker Desktop is not installed",
+          message: "Docker Desktop could not be found on this Mac. Install Docker Desktop, open it once, then rerun the system check.",
+          platform,
+          runtime: "docker"
+        }
+      };
+    }
+
+    return {
+      ok: false,
+      output: normalized,
+      diagnosis: {
+        code: "docker_desktop_open_failed",
+        title: "Docker Desktop did not open",
+        message: "PRonto could not open Docker Desktop automatically. Review the output below, then open Docker Desktop manually or reinstall it.",
+        platform,
+        runtime: "docker"
+      }
+    };
+  }
+
+  function classifyDockerBuildIssue(output, context = "") {
+    const normalized = (output || "").trim();
+    const lowered = normalized.toLowerCase();
+    const normalizedContext = (context || "").trim();
+    const usesColima = normalizedContext.includes("colima") || lowered.includes("colima") || lowered.includes(".colima");
+
+    if (lowered.includes("command not found") || lowered.includes("enoent")) {
+      return {
+        ok: false,
+        output: "Docker is not installed or is not available in PATH. Install Docker, then rerun the system check.",
+        diagnosis: {
+          code: "docker_not_installed",
+          title: "Docker CLI not found",
+          message: "Docker is not installed yet. Install Docker Desktop or another supported Docker runtime, then rerun the system check.",
+          platform,
+          runtime: "missing",
+          context: normalizedContext || undefined
+        }
+      };
+    }
+
+    if (lowered.includes("cannot connect") || lowered.includes("is the docker daemon running")) {
+      return {
+        ok: false,
+        output: "Docker is installed, but the selected runtime is not running. Start Docker Desktop or Colima, then retry the launch preparation.",
+        diagnosis: {
+          code: "docker_runtime_not_running",
+          title: "Docker runtime is not running",
+          message: "Docker is installed, but the selected runtime is not running yet. Start Docker Desktop or your local Docker runtime and retry.",
+          platform,
+          runtime: usesColima ? "colima" : "docker",
+          context: normalizedContext || undefined
+        }
+      };
+    }
+
+    if (lowered.includes("apk add") || lowered.includes("pip install") || lowered.includes("npm i -g") || lowered.includes("temporary error") || lowered.includes("network")) {
+      return {
+        ok: false,
+        output: "Docker started building the PRonto image, but dependency installation failed. Check Docker's network access and try the build again.",
+        diagnosis: {
+          code: "docker_build_dependency_error",
+          title: "Image build dependencies failed",
+          message: "The Docker image build could not finish because package installation failed inside the build. Verify network access from Docker, then retry.",
+          platform,
+          runtime: usesColima ? "colima" : "docker",
+          context: normalizedContext || undefined
+        }
+      };
+    }
+
+    return {
+      ok: false,
+      output: "Docker could not build the PRonto image. Review the latest Docker output and retry the launch preparation.",
+      diagnosis: {
+        code: "docker_build_failed",
+        title: "Docker image build failed",
+        message: "Docker could not build the PRonto image. Review the latest Docker output and resolve the build issue before launch.",
+        platform,
+        runtime: usesColima ? "colima" : "docker",
+        context: normalizedContext || undefined
+      }
+    };
+  }
+
+  async function getDockerContextName() {
+    const contextResult = await maybeRunCommand("docker", ["context", "show"]);
+    return contextResult.ok ? contextResult.stdout : "";
+  }
+
+  async function runRegistryProbe(image, label, url) {
+    try {
+      const { stdout, stderr } = await runDocker([
+        "run",
+        "--rm",
+        image,
+        "wget",
+        "-q",
+        "-S",
+        "--spider",
+        url
+      ]);
+      return {
+        command: label,
+        ok: true,
+        output: [stdout, stderr].filter(Boolean).join("\n").trim() || `Reachable: ${url}`
+      };
+    } catch (error) {
+      const output = [error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim();
+      return {
+        command: label,
+        ok: false,
+        output: output || `Could not reach ${url}`
+      };
+    }
+  }
+
   return {
     async dockerAvailable() {
       try {
@@ -357,10 +569,148 @@ export function createDockerService({
     },
 
     async buildImage() {
-      const { stdout, stderr } = await runDocker(["build", "-t", IMAGE_NAME, "."]);
+      const context = await getDockerContextName();
+      try {
+        const { stdout, stderr } = await runDocker(["build", "-t", IMAGE_NAME, "."]);
+        return {
+          ok: true,
+          output: [stdout, stderr].filter(Boolean).join("\n").trim()
+        };
+      } catch (error) {
+        return classifyDockerBuildIssue([error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim(), context);
+      }
+    },
+
+    async runDockerNetworkCheck() {
+      const context = await getDockerContextName();
+      const dockerVersion = await maybeRunCommand("docker", ["version"]);
+      if (!dockerVersion.ok) {
+        return {
+          ok: false,
+          checks: [
+            {
+              command: "docker runtime",
+              ok: false,
+              output: dockerVersion.stderr || "Docker is not responding."
+            }
+          ],
+          diagnosis: classifyDockerIssue({
+            dockerInstalled: await commandAvailable("docker"),
+            dockerOutput: dockerVersion.stderr,
+            context,
+            colimaInstalled: await commandAvailable("colima"),
+            colimaStatus: "",
+            colimaList: ""
+          })
+        };
+      }
+
+      const checks = await Promise.all([
+        runRegistryProbe("alpine:3.20", "alpine packages", "https://dl-cdn.alpinelinux.org/alpine/"),
+        runRegistryProbe("alpine:3.20", "python packages", "https://pypi.org/simple/pip/"),
+        runRegistryProbe("alpine:3.20", "npm registry", "https://registry.npmjs.org/@openai%2Fcodex")
+      ]);
+
+      const firstFailure = checks.find((check) => !check.ok);
       return {
-        ok: true,
-        output: [stdout, stderr].filter(Boolean).join("\n").trim()
+        ok: checks.every((check) => check.ok),
+        checks,
+        diagnosis: firstFailure
+          ? {
+              code: "docker_network_check_failed",
+              title: "Docker cannot reach required package sources",
+              message: "At least one package source is unreachable from Docker. Repair Docker networking or switch runtimes before retrying the image build.",
+              platform,
+              runtime: context.includes("colima") ? "colima" : "docker",
+              context: context || undefined
+            }
+          : {
+              code: "docker_network_ready",
+              title: "Docker network looks healthy",
+              message: "Docker can reach the package sources needed for the PRonto image build.",
+              platform,
+              runtime: context.includes("colima") ? "colima" : "docker",
+              context: context || undefined
+            }
+      };
+    },
+
+    async resetDockerBuilderCache() {
+      const context = await getDockerContextName();
+      try {
+        const { stdout, stderr } = await runDocker(["builder", "prune", "-af"]);
+        return {
+          ok: true,
+          output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Docker builder cache was cleared."
+        };
+      } catch (error) {
+        const output = [error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim();
+        return {
+          ok: false,
+          output: "Docker could not clear the builder cache. Verify the Docker runtime is healthy, then retry.",
+          diagnosis: classifyDockerIssue({
+            dockerInstalled: await commandAvailable("docker"),
+            dockerOutput: output,
+            context,
+            colimaInstalled: await commandAvailable("colima"),
+            colimaStatus: "",
+            colimaList: ""
+          })
+        };
+      }
+    },
+
+    async getCodexContainerAuthStatus() {
+      const container = await this.getContainerStatus();
+      if (!container.exists || !container.running) {
+        return {
+          ok: false,
+          checks: [
+            {
+              command: "pronto container",
+              ok: false,
+              output: "PRonto is not running yet. Launch the service before testing Codex login."
+            }
+          ]
+        };
+      }
+
+      const checks = [];
+
+      try {
+        const { stdout } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "codex --version"]);
+        checks.push({
+          command: "codex cli",
+          ok: true,
+          output: stdout.trim() || "Codex CLI is installed."
+        });
+      } catch (error) {
+        checks.push({
+          command: "codex cli",
+          ok: false,
+          output: error.stderr?.trim() || error.message
+        });
+        return { ok: false, checks };
+      }
+
+      try {
+        const { stdout, stderr } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "codex login status"]);
+        checks.push({
+          command: "codex login",
+          ok: true,
+          output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Codex login is active in the container."
+        });
+      } catch (error) {
+        checks.push({
+          command: "codex login",
+          ok: false,
+          output: error.stderr?.trim() || error.message || "Codex is not logged in yet."
+        });
+      }
+
+      return {
+        ok: checks.every((check) => check.ok),
+        checks
       };
     },
 
@@ -419,11 +769,19 @@ export function createDockerService({
     },
 
     async startColima() {
-      const { stdout, stderr } = await runCommand("colima", ["start", "--runtime", "docker"]);
-      return {
-        ok: true,
-        output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Colima started."
-      };
+      if (!(await commandAvailable("colima"))) {
+        return classifyColimaStartIssue("colima: command not found");
+      }
+
+      try {
+        const { stdout, stderr } = await runCommand("colima", ["start", "--runtime", "docker"]);
+        return {
+          ok: true,
+          output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Colima started."
+        };
+      } catch (error) {
+        return classifyColimaStartIssue([error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim());
+      }
     },
 
     async openDockerDesktop() {
@@ -434,11 +792,15 @@ export function createDockerService({
         };
       }
 
-      const { stdout, stderr } = await runCommand("open", ["-a", "Docker"]);
-      return {
-        ok: true,
-        output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Docker Desktop launched."
-      };
+      try {
+        const { stdout, stderr } = await runCommand("open", ["-a", "Docker"]);
+        return {
+          ok: true,
+          output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Docker Desktop launched."
+        };
+      } catch (error) {
+        return classifyDockerDesktopOpenIssue([error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim());
+      }
     },
 
     async listDockerContexts() {
@@ -487,6 +849,9 @@ export const getDockerStatus = defaultService.getDockerStatus.bind(defaultServic
 export const getImageExists = defaultService.getImageExists.bind(defaultService);
 export const getContainerStatus = defaultService.getContainerStatus.bind(defaultService);
 export const buildImage = defaultService.buildImage.bind(defaultService);
+export const runDockerNetworkCheck = defaultService.runDockerNetworkCheck.bind(defaultService);
+export const resetDockerBuilderCache = defaultService.resetDockerBuilderCache.bind(defaultService);
+export const getCodexContainerAuthStatus = defaultService.getCodexContainerAuthStatus.bind(defaultService);
 export const stopContainer = defaultService.stopContainer.bind(defaultService);
 export const runContainer = defaultService.runContainer.bind(defaultService);
 export const getContainerLogs = defaultService.getContainerLogs.bind(defaultService);

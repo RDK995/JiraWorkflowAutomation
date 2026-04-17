@@ -18,12 +18,19 @@ BRANCH_NAME="jira/${JIRA_KEY}"
 TARGET_DIR="${SCRIPT_DIR}"
 TARGET_REPO_SLUG=""
 TARGET_REPO_CLONE_URL=""
-CODEX_EXEC_ARGS="${CODEX_EXEC_ARGS:---full-auto}"
+CONTAINER_SAFE_CODEX_EXEC_ARGS="--dangerously-bypass-approvals-and-sandbox"
+CODEX_EXEC_ARGS="${CODEX_EXEC_ARGS:-${CONTAINER_SAFE_CODEX_EXEC_ARGS}}"
 CLAUDE_EXEC_ARGS="${CLAUDE_EXEC_ARGS:---allowedTools Bash,Edit,Write,Read}"
 if [[ "${AI_AGENT}" == "claude" ]]; then
   AI_AGENT_LABEL="Claude Code"
 else
   AI_AGENT_LABEL="Codex CLI"
+fi
+
+if [[ "${AI_AGENT}" == "codex" && "${CODEX_EXEC_ARGS}" == *"--full-auto"* && "${CODEX_EXEC_ARGS}" != *"--dangerously-bypass-approvals-and-sandbox"* ]]; then
+  echo "CODEX_EXEC_ARGS includes --full-auto, which is not compatible with Codex running inside the PRonto Docker container."
+  echo "Replacing --full-auto with --dangerously-bypass-approvals-and-sandbox so the workflow can run inside the container sandbox."
+  CODEX_EXEC_ARGS="${CODEX_EXEC_ARGS//--full-auto/--dangerously-bypass-approvals-and-sandbox}"
 fi
 
 extract_repo_from_spec() {
@@ -97,14 +104,35 @@ prepare_target_repo() {
   mkdir -p "${SCRIPT_DIR}/.codex/repos"
 
   if [[ -d "${local_repo_dir}/.git" ]]; then
-    echo "Using existing local clone: ${local_repo_dir}"
+    echo "Step 2 of 6: Opening the target GitHub repository from the existing local clone."
     git -C "${local_repo_dir}" fetch origin
   else
-    echo "Cloning ${TARGET_REPO_SLUG} into ${local_repo_dir}"
+    echo "Step 2 of 6: Cloning the target GitHub repository for the first time."
     git clone "${TARGET_REPO_CLONE_URL}" "${local_repo_dir}"
   fi
 
   TARGET_DIR="${local_repo_dir}"
+}
+
+run_with_progress_updates() {
+  local label="$1"
+  local workdir="$2"
+  shift 2
+
+  (
+    cd "${workdir}"
+    "$@"
+  ) &
+  local command_pid=$!
+
+  while kill -0 "${command_pid}" 2>/dev/null; do
+    sleep 20
+    if kill -0 "${command_pid}" 2>/dev/null; then
+      echo "${label} is still running. PRonto is waiting for the AI tool to finish its work..."
+    fi
+  done
+
+  wait "${command_pid}"
 }
 
 resolve_target_repo "${TARGET_REPO_INPUT}"
@@ -114,7 +142,7 @@ if ! gh auth status -h github.com >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Generating Jira spec: ${SPEC_FILE}"
+echo "Step 1 of 6: Generating the Jira implementation brief from ${JIRA_KEY}."
 mkdir -p "${SCRIPT_DIR}/${SPEC_DIR}"
 python3 "${SCRIPT_DIR}/tools/jira/jira_to_spec.py" "${JIRA_KEY}" > "${SCRIPT_DIR}/${SPEC_FILE}"
 
@@ -130,10 +158,11 @@ fi
 
 prepare_target_repo
 
+echo "Step 3 of 6: Copying the Jira brief into the target repository."
 mkdir -p "${TARGET_DIR}/${SPEC_DIR}"
 cp "${SCRIPT_DIR}/${SPEC_FILE}" "${TARGET_DIR}/${SPEC_FILE}"
 
-echo "Preparing branch: ${BRANCH_NAME} from origin/${BASE_BRANCH}"
+echo "Step 4 of 6: Preparing branch ${BRANCH_NAME} from ${BASE_BRANCH}."
 git -C "${TARGET_DIR}" fetch origin "${BASE_BRANCH}"
 git -C "${TARGET_DIR}" checkout -B "${BRANCH_NAME}" "origin/${BASE_BRANCH}"
 
@@ -147,22 +176,27 @@ EOF
 )
 
 if [[ "${AI_AGENT}" == "claude" ]]; then
-  echo "Running Claude Code implementation workflow"
-  (cd "${TARGET_DIR}" && claude -p "${AI_PROMPT}" ${CLAUDE_EXEC_ARGS} --output-format text)
+  read -r -a claude_exec_args <<< "${CLAUDE_EXEC_ARGS}"
+  echo "Step 5 of 6: Handing the ticket to Claude Code."
+  echo "Claude Code is reading the Jira brief, editing files, and running checks. This can take a few minutes."
+  run_with_progress_updates "Claude Code implementation workflow" "${TARGET_DIR}" claude -p "${AI_PROMPT}" "${claude_exec_args[@]}" --output-format text
 elif [[ "${AI_AGENT}" == "codex" ]]; then
-  echo "Running Codex implementation workflow"
-  (cd "${TARGET_DIR}" && codex exec ${CODEX_EXEC_ARGS} "${AI_PROMPT}")
+  read -r -a codex_exec_args <<< "${CODEX_EXEC_ARGS}"
+  echo "Step 5 of 6: Handing the ticket to Codex."
+  echo "Codex is reading the Jira brief, editing files, and running checks. This can take a few minutes."
+  run_with_progress_updates "Codex implementation workflow" "${TARGET_DIR}" codex exec "${codex_exec_args[@]}" "${AI_PROMPT}"
 else
   echo "Unknown AI_AGENT: ${AI_AGENT}. Supported values: codex, claude" >&2
   exit 1
 fi
 
-echo "Pushing branch to origin"
+echo "Step 6 of 6: Pushing the working branch to GitHub."
 if ! git -C "${TARGET_DIR}" push -u origin "${BRANCH_NAME}"; then
-  echo "Push failed (likely non-fast-forward). Retrying with --force-with-lease for ${BRANCH_NAME}."
+  echo "GitHub rejected the first push because the remote branch moved. Retrying safely with force-with-lease."
   git -C "${TARGET_DIR}" fetch origin "${BRANCH_NAME}" || true
   git -C "${TARGET_DIR}" push --force-with-lease -u origin "${BRANCH_NAME}"
 fi
+echo "GitHub branch push completed."
 
 ISSUE_SUMMARY_LINE="$(head -n 1 "${TARGET_DIR}/${SPEC_FILE}")"
 PR_SUMMARY="${ISSUE_SUMMARY_LINE#\# ${JIRA_KEY}: }"
@@ -197,7 +231,7 @@ cat >> "${PR_BODY_FILE}" <<EOF
 - Base Branch: ${BASE_BRANCH}
 EOF
 
-echo "Creating PR against ${BASE_BRANCH}"
+echo "Creating the pull request against ${BASE_BRANCH}."
 PR_CREATE_OUTPUT=""
 if [[ -n "${TARGET_REPO_SLUG}" ]]; then
   if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
@@ -206,7 +240,7 @@ if [[ -n "${TARGET_REPO_SLUG}" ]]; then
     --body-file "${PR_BODY_FILE}" \
     --base "${BASE_BRANCH}" 2>&1)"; then
     if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
-      echo "PR already exists for ${BRANCH_NAME}. Updating title/body and reusing existing PR."
+      echo "A pull request already exists for ${BRANCH_NAME}. Updating it and reusing the existing PR."
       (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
         --repo "${TARGET_REPO_SLUG}" \
         --title "${PR_TITLE}" \
@@ -230,7 +264,7 @@ else
     --body-file "${PR_BODY_FILE}" \
     --base "${BASE_BRANCH}" 2>&1)"; then
     if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
-      echo "PR already exists for ${BRANCH_NAME}. Updating title/body and reusing existing PR."
+      echo "A pull request already exists for ${BRANCH_NAME}. Updating it and reusing the existing PR."
       (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
         --title "${PR_TITLE}" \
         --body-file "${PR_BODY_FILE}" >/dev/null 2>&1 || true)
@@ -248,5 +282,7 @@ else
     echo "${PR_CREATE_OUTPUT}"
   fi
 fi
+
+echo "Pull request creation step finished."
 
 echo "Done."

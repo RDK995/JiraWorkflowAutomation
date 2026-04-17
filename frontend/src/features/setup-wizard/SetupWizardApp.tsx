@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ConnectionTestPanel } from "../../components/ui/ConnectionTestPanel";
 import { Field } from "../../components/ui/Field";
 import { ResultList } from "../../components/ui/ResultList";
@@ -12,12 +12,14 @@ import prontoRocket from "../../assets/pronto_design_kit/pronto-rocket.png";
 import prontoStarsOverlay from "../../assets/pronto_design_kit/pronto-stars-overlay.png";
 import { apiGet, apiPost, getApiBase } from "./api/setupApi";
 import { STEP_FIELDS, STEPS } from "./constants/steps";
-import type { DockerContextResponse, PrereqResponse, ReadinessCheckResponse, StatusResponse, ValidationResponse } from "./types/api";
+import type { DockerContextResponse, DockerNetworkCheckResponse, DockerRecoveryResponse, PrereqResponse, ReadinessCheckResponse, StatusResponse, ValidationResponse } from "./types/api";
 import { DEFAULT_CONFIG, type Config } from "./types/config";
 
 function SetupWizardApp() {
   const apiBase = getApiBase();
   const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
+  const dirtyConfigFieldsRef = useRef<Set<string>>(new Set());
+  const consoleOutputRef = useRef<HTMLPreElement | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [checks, setChecks] = useState<PrereqResponse | null>(null);
@@ -25,15 +27,25 @@ function SetupWizardApp() {
   const [activity, setActivity] = useState<string[]>([]);
   const [isBusy, setIsBusy] = useState(false);
   const [dockerCheck, setDockerCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [dockerBuildCheck, setDockerBuildCheck] = useState<DockerRecoveryResponse | null>(null);
+  const [dockerNetworkCheck, setDockerNetworkCheck] = useState<DockerNetworkCheckResponse | null>(null);
   const [jiraCheck, setJiraCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [jiraWebhookCheck, setJiraWebhookCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [hideJiraWebhookSection, setHideJiraWebhookSection] = useState(false);
   const [gitHubCheck, setGitHubCheck] = useState<ReadinessCheckResponse | null>(null);
   const [integrationCheck, setIntegrationCheck] = useState<ReadinessCheckResponse | null>(null);
   const [ngrokCheck, setNgrokCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [codexContainerCheck, setCodexContainerCheck] = useState<ReadinessCheckResponse | null>(null);
   const [isCheckingDocker, setIsCheckingDocker] = useState(false);
+  const [isCheckingDockerBuild, setIsCheckingDockerBuild] = useState(false);
+  const [isCheckingDockerNetwork, setIsCheckingDockerNetwork] = useState(false);
+  const [isResettingDockerBuilderCache, setIsResettingDockerBuilderCache] = useState(false);
   const [isCheckingJira, setIsCheckingJira] = useState(false);
+  const [isCheckingJiraWebhook, setIsCheckingJiraWebhook] = useState(false);
   const [isCheckingGitHub, setIsCheckingGitHub] = useState(false);
   const [isCheckingIntegration, setIsCheckingIntegration] = useState(false);
   const [isCheckingNgrok, setIsCheckingNgrok] = useState(false);
+  const [isCheckingCodexContainer, setIsCheckingCodexContainer] = useState(false);
   const [isCheckingSetupApi, setIsCheckingSetupApi] = useState(false);
   const [isStartingColima, setIsStartingColima] = useState(false);
   const [isOpeningDockerDesktop, setIsOpeningDockerDesktop] = useState(false);
@@ -44,8 +56,14 @@ function SetupWizardApp() {
   const [setupApiError, setSetupApiError] = useState<string>("");
   const [setupApiActionLabel, setSetupApiActionLabel] = useState("Start Setup API");
   const [dockerRecoveryMessage, setDockerRecoveryMessage] = useState<string>("");
+  const [dockerBuildStartedAt, setDockerBuildStartedAt] = useState<number | null>(null);
+  const [dockerBuildElapsedMs, setDockerBuildElapsedMs] = useState(0);
   const [dockerContexts, setDockerContexts] = useState<DockerContextResponse["contexts"]>([]);
   const [selectedDockerContext, setSelectedDockerContext] = useState("");
+  const [copiedCodexCode, setCopiedCodexCode] = useState(false);
+  const [isConsolePinnedToBottom, setIsConsolePinnedToBottom] = useState(true);
+  const [observedPullRequests, setObservedPullRequests] = useState<string[]>([]);
+  const [observedCodexDeviceLogin, setObservedCodexDeviceLogin] = useState<ReturnType<typeof extractCodexDeviceLogin>>(null);
   const [completedStepIndexes, setCompletedStepIndexes] = useState<number[]>([]);
   const [isNavigationLocked, setIsNavigationLocked] = useState(false);
   const [hasLaunchedThisSession, setHasLaunchedThisSession] = useState(false);
@@ -69,7 +87,13 @@ function SetupWizardApp() {
       apiGet<StatusResponse>("/api/status")
     ])
       .then(([configResponse, prereqResponse, statusResponse]) => {
-        setConfig({ ...DEFAULT_CONFIG, ...configResponse.config });
+        setConfig((current) => {
+          const next = { ...DEFAULT_CONFIG, ...configResponse.config };
+          for (const field of dirtyConfigFieldsRef.current) {
+            next[field] = current[field];
+          }
+          return next;
+        });
         setChecks(prereqResponse);
         setStatus(statusResponse);
       })
@@ -77,6 +101,12 @@ function SetupWizardApp() {
         setActivity((current) => [...current, `Failed to load setup state: ${error.message}`]);
       });
   }, []);
+
+  const markConfigFieldsDirty = (...fields: string[]) => {
+    for (const field of fields) {
+      dirtyConfigFieldsRef.current.add(field);
+    }
+  };
 
   useEffect(() => {
     if (STEPS[stepIndex].id !== "run") {
@@ -89,6 +119,44 @@ function SetupWizardApp() {
 
     return () => window.clearInterval(interval);
   }, [stepIndex]);
+
+  useEffect(() => {
+    if (STEPS[stepIndex].id !== "run" || !isConsolePinnedToBottom || !consoleOutputRef.current) {
+      return;
+    }
+
+    const node = consoleOutputRef.current;
+    node.scrollTop = node.scrollHeight;
+  }, [isConsolePinnedToBottom, stepIndex, status?.logs]);
+
+  useEffect(() => {
+    if (!isCheckingDockerBuild || !dockerBuildStartedAt) {
+      setDockerBuildElapsedMs(0);
+      return;
+    }
+
+    setDockerBuildElapsedMs(Date.now() - dockerBuildStartedAt);
+    const interval = window.setInterval(() => {
+      setDockerBuildElapsedMs(Date.now() - dockerBuildStartedAt);
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [dockerBuildStartedAt, isCheckingDockerBuild]);
+
+  useEffect(() => {
+    if (!status) {
+      return;
+    }
+
+    if (status.createdPullRequests?.length) {
+      setObservedPullRequests((current) => Array.from(new Set([...current, ...status.createdPullRequests])));
+    }
+
+    const currentDeviceLogin = extractCodexDeviceLogin(status.logs || "");
+    if (currentDeviceLogin) {
+      setObservedCodexDeviceLogin(currentDeviceLogin);
+    }
+  }, [status]);
 
   const checkSetupApiReachability = async (): Promise<boolean> => {
     setIsCheckingSetupApi(true);
@@ -105,6 +173,12 @@ function SetupWizardApp() {
     } finally {
       setIsCheckingSetupApi(false);
     }
+  };
+
+  const refreshStatus = async () => {
+    const latestStatus = await apiGet<StatusResponse>("/api/status");
+    setStatus(latestStatus);
+    return latestStatus;
   };
 
   useEffect(() => {
@@ -153,12 +227,13 @@ function SetupWizardApp() {
   }, [config.CLAUDE_BOOTSTRAP_LOGIN, config.CLAUDE_DEVICE_LOGIN_ON_START]);
   const selectedAiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
   const integrationDisplayLabel = selectedAiAgent === "claude" ? "Claude Code" : "Codex";
+  const isNgrokEnabled = config.NGROK_ENABLE === "true";
 
   const reviewItems = useMemo(
     () => [
       ["Jira base URL", config.JIRA_BASE_URL || "Missing"],
       ["Jira user", config.JIRA_USER_EMAIL || "Missing"],
-      ["GitHub token", config.GITHUB_TOKEN ? "Configured" : config.GH_TOKEN ? "Configured via GH_TOKEN" : "Missing"],
+      ["GitHub token", config.GITHUB_TOKEN || config.GH_TOKEN ? "Configured" : "Missing"],
       ["AI integration", integrationDisplayLabel],
       [
         "Integration auth",
@@ -169,10 +244,17 @@ function SetupWizardApp() {
               : "Persisted login"
       ],
       ["Base branch", config.WORKFLOW_BASE_BRANCH || "Missing"],
-      ["ngrok", config.NGROK_ENABLE === "true" ? "Enabled" : "Disabled"]
+      ["ngrok", isNgrokEnabled ? "Enabled" : "Disabled"]
     ],
-    [claudeAuthMode, codexAuthMode, config, integrationDisplayLabel, selectedAiAgent]
+    [claudeAuthMode, codexAuthMode, config, integrationDisplayLabel, isNgrokEnabled, selectedAiAgent]
   );
+  const configuredWebhookBaseUrl = useMemo(() => {
+    if (!isNgrokEnabled || !config.NGROK_DOMAIN) {
+      return "";
+    }
+    return `https://${config.NGROK_DOMAIN.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+  }, [config.NGROK_DOMAIN, isNgrokEnabled]);
+  const configuredWebhookUrl = configuredWebhookBaseUrl ? `${configuredWebhookBaseUrl}/webhooks/jira-transition` : "";
 
   const launchSucceeded = Boolean(status?.docker.container.running);
   const runStepIndex = STEPS.findIndex((step) => step.id === "run");
@@ -188,9 +270,13 @@ function SetupWizardApp() {
   }, [launchSucceeded, hasLaunchedThisSession, runStepIndex]);
 
   const updateField = (field: string, value: string) => {
+    markConfigFieldsDirty(field);
     setConfig((current) => ({ ...current, [field]: value }));
     if (["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN"].includes(field)) {
       setJiraCheck(null);
+    }
+    if (["JIRA_BASE_URL", "JIRA_USER_EMAIL", "JIRA_API_TOKEN", "JIRA_WEBHOOK_SECRET", "READY_STATUS", "IN_PROGRESS_STATUS", "NGROK_DOMAIN"].includes(field)) {
+      setJiraWebhookCheck(null);
     }
     if (["GITHUB_TOKEN", "GH_TOKEN"].includes(field)) {
       setGitHubCheck(null);
@@ -209,6 +295,7 @@ function SetupWizardApp() {
   };
 
   const updateCodexAuthMode = (mode: string) => {
+    markConfigFieldsDirty("CODEX_BOOTSTRAP_LOGIN", "CODEX_DEVICE_LOGIN_ON_START", "CODEX_API_KEY", "OPENAI_API_KEY");
     setConfig((current) => {
       if (mode === "device") {
         return {
@@ -251,6 +338,7 @@ function SetupWizardApp() {
 
   const updateAiAgent = (agent: string) => {
     if (agent === "claude") {
+      markConfigFieldsDirty("AI_AGENT", "CLAUDE_BOOTSTRAP_LOGIN", "CLAUDE_DEVICE_LOGIN_ON_START", "ANTHROPIC_API_KEY");
       setConfig((current) => ({
         ...current,
         AI_AGENT: "claude",
@@ -269,6 +357,7 @@ function SetupWizardApp() {
       });
       return;
     }
+    markConfigFieldsDirty("AI_AGENT", "CODEX_BOOTSTRAP_LOGIN", "CODEX_DEVICE_LOGIN_ON_START", "CODEX_API_KEY", "OPENAI_API_KEY");
     setConfig((current) => ({
       ...current,
       AI_AGENT: "codex",
@@ -293,6 +382,7 @@ function SetupWizardApp() {
   };
 
   const updateClaudeAuthMode = (mode: string) => {
+    markConfigFieldsDirty("CLAUDE_BOOTSTRAP_LOGIN", "CLAUDE_DEVICE_LOGIN_ON_START", "ANTHROPIC_API_KEY");
     setConfig((current) => {
       if (mode === "persisted") {
         return {
@@ -353,6 +443,11 @@ function SetupWizardApp() {
   };
 
   const runSetup = async () => {
+    if (!launchReadyForReview) {
+      setActivity((current) => [...current, "Launch is blocked until all required setup checks pass."]);
+      return;
+    }
+
     setIsBusy(true);
     setActivity([]);
 
@@ -362,8 +457,14 @@ function SetupWizardApp() {
         return;
       }
 
-      setActivity((current) => [...current, "Building the PRonto automation image."]);
-      await apiPost("/api/docker/build", {});
+      if (!status?.docker.imageExists) {
+        setActivity((current) => [...current, "Building the PRonto automation image."]);
+        const buildResult = await apiPost<DockerRecoveryResponse>("/api/docker/build", {});
+        if (!buildResult.ok) {
+          setActivity((current) => [...current, `Launch failed: ${buildResult.diagnosis?.message || buildResult.output || "Docker image build failed."}`]);
+          return;
+        }
+      }
 
       setActivity((current) => [...current, "Starting the PRonto service container."]);
       setHasLaunchedThisSession(true);
@@ -424,6 +525,73 @@ function SetupWizardApp() {
     }
   };
 
+  const runDockerBuildCheck = async () => {
+    setIsCheckingDockerBuild(true);
+    setDockerBuildStartedAt(Date.now());
+    setDockerRecoveryMessage("");
+    setDockerNetworkCheck(null);
+    try {
+      const result = await apiPost<DockerRecoveryResponse>("/api/docker/build", {});
+      setDockerBuildCheck(result);
+      await refreshStatus().catch(() => undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setDockerBuildCheck({
+        ok: false,
+        output: message,
+        diagnosis: {
+          code: "docker_build_failed",
+          title: "Docker image build failed",
+          message
+        }
+      });
+    } finally {
+      setIsCheckingDockerBuild(false);
+      setDockerBuildStartedAt(null);
+    }
+  };
+
+  const runDockerNetworkDiagnostics = async () => {
+    setIsCheckingDockerNetwork(true);
+    try {
+      setDockerNetworkCheck(await apiPost<DockerNetworkCheckResponse>("/api/docker/network-check", {}));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setDockerNetworkCheck({
+        ok: false,
+        checks: [{ command: "docker network diagnostics", ok: false, output: message }],
+        diagnosis: {
+          code: "docker_network_check_failed",
+          title: "Docker network diagnostics failed",
+          message
+        }
+      });
+    } finally {
+      setIsCheckingDockerNetwork(false);
+    }
+  };
+
+  const resetDockerBuilderFromUi = async () => {
+    setIsResettingDockerBuilderCache(true);
+    setDockerRecoveryMessage("");
+    try {
+      const result = await apiPost<DockerRecoveryResponse>("/api/docker/reset-builder-cache", {});
+      setDockerRecoveryMessage(result.output || "Docker builder cache was cleared.");
+      if (!result.ok) {
+        setDockerCheck((current) => current ?? {
+          ok: false,
+          checks: [{ command: "docker builder prune", ok: false, output: "" }],
+          diagnosis: result.diagnosis
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setDockerRecoveryMessage(`Could not reset the Docker builder cache: ${message}`);
+    } finally {
+      setIsResettingDockerBuilderCache(false);
+    }
+  };
+
   const loadDockerContexts = async () => {
     setIsLoadingDockerContexts(true);
     try {
@@ -465,13 +633,23 @@ function SetupWizardApp() {
     setIsStartingColima(true);
     setDockerRecoveryMessage("");
     try {
-      const result = await apiPost<{ ok: boolean; output: string }>("/api/docker/start-colima", {});
+      const result = await apiPost<DockerRecoveryResponse>("/api/docker/start-colima", {});
+      if (!result.ok) {
+        setDockerRecoveryMessage(result.diagnosis?.message || result.output || "Colima failed to start.");
+        setDockerCheck({
+          ok: false,
+          checks: [{ command: "colima start", ok: false, output: "" }],
+          diagnosis: result.diagnosis
+        });
+        return;
+      }
       setDockerRecoveryMessage(result.output || "Colima started. Waiting for Docker to become ready...");
       setIsStartingColima(false);
       await pollDockerRecovery("Colima started and Docker is now ready.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
       setDockerRecoveryMessage(`Could not start Colima: ${message}`);
+    } finally {
       setIsStartingColima(false);
     }
   };
@@ -480,13 +658,21 @@ function SetupWizardApp() {
     setIsOpeningDockerDesktop(true);
     setDockerRecoveryMessage("");
     try {
-      const result = await apiPost<{ ok: boolean; output: string }>("/api/docker/open-docker-desktop", {});
+      const result = await apiPost<DockerRecoveryResponse>("/api/docker/open-docker-desktop", {});
       setDockerRecoveryMessage(result.output || "Docker Desktop launched. Waiting for Docker to become ready...");
-      setIsOpeningDockerDesktop(false);
+      if (!result.ok) {
+        setDockerCheck({
+          ok: false,
+          checks: [{ command: "open Docker Desktop", ok: false, output: "" }],
+          diagnosis: result.diagnosis
+        });
+        return;
+      }
       await pollDockerRecovery("Docker Desktop finished starting and Docker is now ready.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
       setDockerRecoveryMessage(`Could not open Docker Desktop: ${message}`);
+    } finally {
       setIsOpeningDockerDesktop(false);
     }
   };
@@ -518,6 +704,34 @@ function SetupWizardApp() {
       setJiraCheck({ ok: false, checks: [{ command: "jira connectivity", ok: false, output: message }] });
     } finally {
       setIsCheckingJira(false);
+    }
+  };
+
+  const runJiraWebhookCheck = async () => {
+    setIsCheckingJiraWebhook(true);
+    setHideJiraWebhookSection(false);
+    try {
+      const result = await apiPost<ReadinessCheckResponse>("/api/checks/jira-webhook-delivery", { config });
+      setJiraWebhookCheck(result);
+      await refreshStatus().catch(() => undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setJiraWebhookCheck({ ok: false, checks: [{ command: "jira webhook delivery", ok: false, output: message }] });
+      await refreshStatus().catch(() => undefined);
+    } finally {
+      setIsCheckingJiraWebhook(false);
+    }
+  };
+
+  const runCodexContainerCheck = async () => {
+    setIsCheckingCodexContainer(true);
+    try {
+      setCodexContainerCheck(await apiPost<ReadinessCheckResponse>("/api/checks/codex-container-auth", {}));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setCodexContainerCheck({ ok: false, checks: [{ command: "codex login", ok: false, output: message }] });
+    } finally {
+      setIsCheckingCodexContainer(false);
     }
   };
 
@@ -610,6 +824,26 @@ function SetupWizardApp() {
     return "The Jira check failed. Review the URL, email, token, and network access, then try again.";
   }, [jiraCheck]);
 
+  const jiraWebhookErrorHelp = useMemo(() => {
+    const output = jiraWebhookCheck?.checks?.find((check) => !check.ok)?.output?.toLowerCase() || "";
+    if (!output || jiraWebhookCheck?.ok) {
+      return "";
+    }
+    if (output.includes("launch pronto before testing webhook delivery") || output.includes("not reachable on localhost:3000")) {
+      return "This test works after PRonto is running. Launch the service first, then rerun the webhook delivery check.";
+    }
+    if (output.includes("could not determine the public webhook url") || output.includes("ngrok url appears in the logs")) {
+      return "PRonto is running, but the setup flow could not find the public ngrok URL yet. Check the Public Access step and confirm ngrok started successfully.";
+    }
+    if (output.includes("401") || output.includes("invalid webhook secret")) {
+      return "The webhook secret on this screen does not match what PRonto is expecting. Make sure Jira and PRonto use the same secret value.";
+    }
+    if (output.includes("404")) {
+      return "The public URL responded, but not with the expected webhook path. Recheck the webhook URL and make sure it ends with /webhooks/jira-transition.";
+    }
+    return "The webhook did not make it through the public route cleanly. Check the public URL, secret, and PRonto launch logs, then retry.";
+  }, [jiraWebhookCheck]);
+
   const gitHubErrorHelp = useMemo(() => {
     const output = gitHubCheck?.checks?.[0]?.output?.toLowerCase() || "";
     if (!output || gitHubCheck?.ok) {
@@ -659,7 +893,7 @@ function SetupWizardApp() {
       return "";
     }
     if (output.includes("ngrok_authtoken")) {
-      return "Turn ngrok on only if you want public webhook access, and add an ngrok authtoken before testing.";
+      return "Add an ngrok authtoken before testing public webhook access.";
     }
     if (output.includes("ngrok_api_key is missing")) {
       return "A reserved domain needs an ngrok API key so PRonto can verify it now and provision it during startup if needed.";
@@ -688,6 +922,12 @@ function SetupWizardApp() {
     if (diagnosisCode === "colima_broken") {
       return "The active Colima profile looks broken. Switch Docker to another context, or repair and recreate the Colima profile before retrying.";
     }
+    if (diagnosisCode === "colima_start_failed") {
+      return "Colima did not start successfully. Review the error output below, then retry or switch Docker to another runtime from this screen.";
+    }
+    if (diagnosisCode === "colima_vm_config_error") {
+      return "Colima could not initialize its VM. Use Docker Desktop from this screen, or repair the local Colima VM setup before retrying.";
+    }
     if (diagnosisCode === "colima_stopped" || diagnosisCode === "colima_socket_missing") {
       return "Docker is using Colima, but the Colima runtime is not available. Start Colima from the UI, then rerun the check.";
     }
@@ -699,6 +939,12 @@ function SetupWizardApp() {
     }
     if (diagnosisCode === "docker_runtime_not_running") {
       return "Docker is installed but the selected runtime is not running. Start Docker Desktop or Colima, then retry.";
+    }
+    if (diagnosisCode === "docker_desktop_not_installed") {
+      return "Docker Desktop is not installed on this Mac yet. Install it from the link below, open it once, then rerun the system check.";
+    }
+    if (diagnosisCode === "docker_desktop_open_failed") {
+      return "PRonto could not open Docker Desktop automatically. Try opening it yourself, or reinstall Docker Desktop if it is missing or damaged.";
     }
     if (output.includes("failed to fetch") || output.includes("fetch failed") || output.includes("networkerror")) {
       return "PRonto could not reach the local Setup API. This is usually not a Docker problem. Start the Setup API and verify the API URL is reachable from your browser.";
@@ -728,11 +974,15 @@ function SetupWizardApp() {
     (
       dockerDiagnosis?.code === "colima_stopped" ||
       dockerDiagnosis?.code === "colima_socket_missing" ||
+      dockerDiagnosis?.code === "colima_start_failed" ||
       dockerLooksLikeColima
     );
   const canOpenDockerDesktop =
     dockerPlatform === "darwin" &&
     (dockerDiagnosis?.code === "docker_runtime_not_running" ||
+      dockerDiagnosis?.code === "colima_not_installed" ||
+      dockerDiagnosis?.code === "colima_start_failed" ||
+      dockerDiagnosis?.code === "colima_vm_config_error" ||
       dockerDiagnosis?.code === "docker_context_misconfigured" ||
       !dockerDiagnosis);
   const shouldOfferContextSwitch =
@@ -748,25 +998,99 @@ function SetupWizardApp() {
         : "https://www.docker.com/products/docker-desktop/";
   const dockerInstallLabel =
     dockerPlatform === "linux" ? "Open Docker Engine install guide" : "Open Docker Desktop install guide";
+  const colimaInstallLink =
+    dockerPlatform === "darwin" || dockerPlatform === "linux"
+      ? "https://github.com/abiosoft/colima"
+      : "https://github.com/abiosoft/colima";
+  const shouldOfferColimaInstall =
+    dockerDiagnosis?.code === "colima_not_installed";
   const dockerPlatformHelp =
     dockerPlatform === "win32"
       ? "On Windows, start Docker Desktop and wait for the engine to finish initializing."
       : dockerPlatform === "linux"
         ? "On Linux, start your Docker daemon or service, then rerun the system check."
         : "On macOS, start Docker Desktop or Colima, then rerun the system check.";
+  const dockerBuildElapsedLabel = useMemo(() => {
+    const totalSeconds = Math.max(0, Math.floor(dockerBuildElapsedMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }, [dockerBuildElapsedMs]);
+  const dockerBuildProgressLabel = useMemo(() => {
+    const totalSeconds = Math.max(0, Math.floor(dockerBuildElapsedMs / 1000));
+    if (totalSeconds < 10) {
+      return "Starting build...";
+    }
+    if (totalSeconds < 45) {
+      return "Installing system packages...";
+    }
+    if (totalSeconds < 120) {
+      return "Installing Python and npm tools...";
+    }
+    return "Finalizing image...";
+  }, [dockerBuildElapsedMs]);
+  const dockerImageReady = Boolean(status?.docker.imageExists) || Boolean(dockerBuildCheck?.ok);
+  const shouldOfferDockerBuildRecovery =
+    dockerBuildCheck?.ok === false &&
+    (dockerBuildCheck.diagnosis?.code === "docker_build_dependency_error" || dockerBuildCheck.diagnosis?.code === "docker_build_failed");
   const requiresGitHubAuth = config.REQUIRE_GITHUB_AUTH === "true";
   const stepTestPassed = {
-    docker: Boolean(dockerCheck?.ok),
+    docker: Boolean(dockerCheck?.ok) && dockerImageReady,
     jira: Boolean(jiraCheck?.ok),
     github: !requiresGitHubAuth || Boolean(gitHubCheck?.ok),
     integration: Boolean(integrationCheck?.ok),
     ngrok: Boolean(ngrokCheck?.ok)
   } as const;
+  const launchBlockers = useMemo(() => {
+    const blockers = [];
+    if (!stepTestPassed.docker) {
+      blockers.push(dockerCheck?.ok ? "Build the PRonto Docker image successfully." : "Run the System Check successfully.");
+    }
+    if (!stepTestPassed.jira) {
+      blockers.push("Test the Jira connection successfully.");
+    }
+    if (!stepTestPassed.github) {
+      blockers.push(requiresGitHubAuth ? "Test GitHub access successfully." : "Complete the GitHub setup requirements.");
+    }
+    if (!stepTestPassed.integration) {
+      blockers.push("Test the AI integration successfully.");
+    }
+    if (!stepTestPassed.ngrok) {
+      blockers.push("Test Public Access successfully.");
+    }
+    return blockers;
+  }, [requiresGitHubAuth, stepTestPassed.docker, stepTestPassed.github, stepTestPassed.integration, stepTestPassed.jira, stepTestPassed.ngrok]);
+  const launchReadyForReview = launchBlockers.length === 0;
   const currentStepRequiresPassingTest = ["docker", "jira", "github", "integration", "ngrok"].includes(currentStep.id);
   const currentStepHasPassingTest = currentStep.id in stepTestPassed
     ? stepTestPassed[currentStep.id as keyof typeof stepTestPassed]
     : true;
-  const createdPullRequests = useMemo(() => extractPullRequestUrls(status?.logs || ""), [status?.logs]);
+  const createdPullRequests = observedPullRequests;
+  const codexDeviceLogin = observedCodexDeviceLogin;
+
+  const copyCodexCode = async () => {
+    if (!codexDeviceLogin?.code) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(codexDeviceLogin.code);
+      setCopiedCodexCode(true);
+      window.setTimeout(() => setCopiedCodexCode(false), 2500);
+    } catch {
+      setCopiedCodexCode(false);
+    }
+  };
+
+  const handleConsoleScroll = () => {
+    const node = consoleOutputRef.current;
+    if (!node) {
+      return;
+    }
+
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    setIsConsolePinnedToBottom(distanceFromBottom < 24);
+  };
 
   const nextStep = async () => {
     if (currentStep.id === "docker" && !stepTestPassed.docker) {
@@ -793,6 +1117,10 @@ function SetupWizardApp() {
       const valid = await validate();
       if (!valid) {
         setActivity((current) => [...current, "Complete the remaining required fields before launching PRonto."]);
+        return;
+      }
+      if (!launchReadyForReview) {
+        setActivity((current) => [...current, "Finish the remaining setup checks before opening the Launch Console."]);
         return;
       }
     }
@@ -962,7 +1290,7 @@ function SetupWizardApp() {
                   <ol className="plain-list ordered">
                     <li>Install Docker Desktop for your platform and open it once.</li>
                     <li>Wait for the dashboard to load and the Docker whale to appear active.</li>
-                    <li>Run the PRonto system check below before moving on.</li>
+                    <li>Run the PRonto system check and verify the PRonto image build before moving on.</li>
                   </ol>
                   <div className="action-row">
                     <button
@@ -972,8 +1300,23 @@ function SetupWizardApp() {
                     >
                       {isCheckingDocker ? "Running System Check..." : "Run System Check"}
                     </button>
-                    {dockerCheck?.ok ? <span className="check-pass">✓ System ready</span> : null}
+                    {dockerCheck?.ok ? <span className="check-pass">✓ Docker runtime ready</span> : null}
                   </div>
+                  <div className="action-row">
+                    <button
+                      className={`primary docker-check-button ${dockerImageReady ? "is-pass" : dockerBuildCheck && !dockerBuildCheck.ok ? "is-fail" : ""}`}
+                      onClick={() => void runDockerBuildCheck()}
+                      disabled={!dockerCheck?.ok || isCheckingDockerBuild || isCheckingDocker}
+                    >
+                      {isCheckingDockerBuild ? "Building PRonto image..." : status?.docker.imageExists ? "Rebuild PRonto Image" : "Verify PRonto Image Build"}
+                    </button>
+                    {dockerImageReady ? <span className="check-pass">✓ PRonto image ready</span> : null}
+                  </div>
+                  {isCheckingDockerBuild ? (
+                    <p className="muted">
+                      {dockerBuildProgressLabel} Building for {dockerBuildElapsedLabel}.
+                    </p>
+                  ) : null}
                 </div>
               </div>
               <div className="guide-card terminal-side-panel">
@@ -1009,6 +1352,61 @@ function SetupWizardApp() {
                   </div>
                 ) : null}
                 <ResultList result={dockerCheck} emptyMessage="Run the system check to confirm this machine is ready for launch." />
+                {dockerCheck?.ok ? (
+                  <div className="guide-section">
+                    <h4>PRonto image build</h4>
+                    <p className={dockerImageReady ? "check-pass" : "muted"}>
+                      {dockerImageReady
+                        ? "✓ PRonto image build completed successfully."
+                        : "Build the Docker image now so package installation issues are caught during System Check instead of at launch."}
+                    </p>
+                    {dockerBuildCheck ? (
+                      <ul className="plain-list">
+                        <li className={dockerBuildCheck.ok ? "result-pass" : "result-fail"}>
+                          <strong>{dockerBuildCheck.ok ? "✓" : "✕"} docker build</strong>
+                          <span>
+                            {dockerBuildCheck.ok
+                              ? "PRonto image built successfully."
+                              : dockerBuildCheck.diagnosis?.message || dockerBuildCheck.output || "Docker image build failed."}
+                          </span>
+                        </li>
+                      </ul>
+                    ) : status?.docker.imageExists ? (
+                      <ul className="plain-list">
+                        <li className="result-pass">
+                          <strong>✓ docker build</strong>
+                          <span>The PRonto image already exists on this machine.</span>
+                        </li>
+                      </ul>
+                    ) : (
+                      <p className="muted">Run the build verification once Docker is ready.</p>
+                    )}
+                    {shouldOfferDockerBuildRecovery ? (
+                      <div className="guide-section">
+                        <h4>Build recovery</h4>
+                        <p className="muted">If the image build fails during package installation, check Docker networking and optionally clear the builder cache before retrying.</p>
+                        <div className="action-row">
+                          <button
+                            className="secondary"
+                            onClick={() => void runDockerNetworkDiagnostics()}
+                            disabled={isCheckingDockerNetwork || isCheckingDockerBuild}
+                          >
+                            {isCheckingDockerNetwork ? "Running Docker Network Check..." : "Run Docker Network Check"}
+                          </button>
+                          <button
+                            className="secondary"
+                            onClick={() => void resetDockerBuilderFromUi()}
+                            disabled={isResettingDockerBuilderCache || isCheckingDockerBuild}
+                          >
+                            {isResettingDockerBuilderCache ? "Resetting Builder Cache..." : "Reset Builder Cache"}
+                          </button>
+                        </div>
+                        {dockerNetworkCheck ? <ResultList result={dockerNetworkCheck} /> : null}
+                        {dockerNetworkCheck?.diagnosis?.message ? <p className="muted">{dockerNetworkCheck.diagnosis.message}</p> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {dockerCheck && !dockerCheck.ok ? (
                   <div className="guide-section guide-error-help docker-troubleshooting">
                     <h4>{dockerDiagnosis?.title || "Fix options"}</h4>
@@ -1024,11 +1422,17 @@ function SetupWizardApp() {
                         .
                       </p>
                     ) : null}
+                    {dockerDiagnosis?.code === "docker_desktop_not_installed" || dockerDiagnosis?.code === "docker_desktop_open_failed" ? (
+                      <p className="muted">Use the install guide below if Docker Desktop is missing, then come back and retry from this screen.</p>
+                    ) : null}
                     {dockerDiagnosis?.code === "colima_not_installed" ? (
                       <p className="muted">Install Colima or switch Docker to a different context before continuing.</p>
                     ) : null}
                     {dockerDiagnosis?.code === "colima_broken" ? (
                       <p className="muted">This usually needs a Colima profile repair or recreation outside PRonto, or a switch to a different Docker context.</p>
+                    ) : null}
+                    {dockerDiagnosis?.code === "colima_start_failed" || dockerDiagnosis?.code === "colima_vm_config_error" ? (
+                      <p className="muted">If Colima keeps failing, use Docker Desktop or switch to another healthy Docker context from this screen so a new user can continue setup without terminal commands.</p>
                     ) : null}
                     {dockerDiagnosis?.code === "docker_context_misconfigured" ? (
                       <p className="muted">Switch to a working Docker context such as <code>default</code> or the active Desktop context, then retry.</p>
@@ -1078,11 +1482,25 @@ function SetupWizardApp() {
                         </div>
                       </div>
                     ) : null}
-                    {dockerDiagnosis?.code === "docker_not_installed" ? (
+                    {dockerDiagnosis?.code === "docker_not_installed" || dockerDiagnosis?.code === "docker_desktop_not_installed" || dockerDiagnosis?.code === "docker_desktop_open_failed" ? (
                       <div className="action-row">
                         <a className="secondary button-link" href={dockerInstallLink} target="_blank" rel="noreferrer">
                           {dockerInstallLabel}
                         </a>
+                      </div>
+                    ) : null}
+                    {shouldOfferColimaInstall || dockerDiagnosis?.code === "colima_start_failed" || dockerDiagnosis?.code === "colima_vm_config_error" ? (
+                      <div className="action-row">
+                        {shouldOfferColimaInstall ? (
+                          <a className="secondary button-link" href={colimaInstallLink} target="_blank" rel="noreferrer">
+                            Open Colima install guide
+                          </a>
+                        ) : null}
+                        {dockerPlatform === "darwin" ? (
+                          <a className="secondary button-link" href={dockerInstallLink} target="_blank" rel="noreferrer">
+                            Open Docker Desktop install guide
+                          </a>
+                        ) : null}
                       </div>
                     ) : null}
                     <div className="action-row">
@@ -1103,24 +1521,17 @@ function SetupWizardApp() {
               asideClassName="guide-card guide-card-compact"
               asideContent={
                 <>
-                  <GuideChecklist title="Need these 3 values" items={["Jira site URL", "Jira account email", "Jira API token"]} />
                   <GuideLinkCard
-                    title="Create API token"
-                    description="Open Atlassian API token settings and create a token for the Jira account you want PRonto to use."
+                    title="Create fine-grained personal access token"
+                    description="Open Atlassian token settings and create a fine-grained personal access token for the Jira account you want PRonto to use. Fine-grained tokens offer scoped permissions and are the recommended authentication method."
                     href="https://id.atlassian.com/manage-profile/security/api-tokens"
                     linkLabel="Open Atlassian token settings"
-                  />
-                  <GuideLinkCard
-                    title="Open Jira webhook settings"
-                    description="After the connection test passes, open your Jira webhook admin page to create the transition webhook PRonto listens for."
-                    href={config.JIRA_BASE_URL ? `${config.JIRA_BASE_URL.replace(/\/+$/, "")}/secure/admin/Webhooks.jspa` : "https://support.atlassian.com/jira-cloud-administration/docs/manage-webhooks/"}
-                    linkLabel={config.JIRA_BASE_URL ? "Open webhook settings in Jira" : "Open Jira webhook docs"}
                   />
                   <FieldGuide
                     items={[
                       ["Base URL", <code key="base">https://your-site.atlassian.net</code>],
                       ["User email", "The email tied to your Jira account"],
-                      ["API token", "Paste the token you created in Atlassian"],
+                      ["Personal access token", "Your fine-grained personal access token created in Atlassian"],
                       ["Webhook secret", "Optional. Use only if your Jira webhook is configured with one."],
                       ["Webhook URL", <code key="webhook-url">https://&lt;public-url&gt;/webhooks/jira-transition</code>],
                       ["Webhook event", "Use Issue updated, or the transition event if your Jira UI offers that directly."],
@@ -1131,13 +1542,17 @@ function SetupWizardApp() {
                   <details className="guide-section codex-advanced">
                     <summary>Additional information</summary>
                     <div className="guide-stack">
+                      <h4>About fine-grained personal access tokens</h4>
                       <p className="muted">
-                        Use these Jira docs if you need the full webhook setup flow, help creating API tokens, or more detail on webhook administration.
+                        Fine-grained personal access tokens (PATs) are the recommended Atlassian authentication method. They offer scoped permissions and can be restricted to specific projects, improving security over legacy API tokens. Create your token with permissions for the Jira projects PRonto needs to access.
+                      </p>
+                      <p className="muted">
+                        Use these Jira docs if you need the full webhook setup flow, help creating fine-grained personal access tokens, or more detail on webhook administration.
                       </p>
                       <ul className="plain-list guide-checklist">
                         <li>
                           <a href="https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/" target="_blank" rel="noreferrer">
-                            Atlassian API token docs
+                            Managing personal access tokens for Atlassian
                           </a>
                         </li>
                         <li>
@@ -1176,7 +1591,7 @@ function SetupWizardApp() {
             >
               <Field label="Jira base URL" required value={config.JIRA_BASE_URL} onChange={(value) => updateField("JIRA_BASE_URL", value)} error={errors.JIRA_BASE_URL} placeholder="https://your-site.atlassian.net" />
               <Field label="Jira user email" required value={config.JIRA_USER_EMAIL} onChange={(value) => updateField("JIRA_USER_EMAIL", value)} error={errors.JIRA_USER_EMAIL} placeholder="name@example.com" />
-              <Field label="Jira API token" required value={config.JIRA_API_TOKEN} onChange={(value) => updateField("JIRA_API_TOKEN", value)} error={errors.JIRA_API_TOKEN} secret />
+              <Field label="Jira personal access token" required value={config.JIRA_API_TOKEN} onChange={(value) => updateField("JIRA_API_TOKEN", value)} error={errors.JIRA_API_TOKEN} secret />
               <Field label="Webhook secret" optional value={config.JIRA_WEBHOOK_SECRET} onChange={(value) => updateField("JIRA_WEBHOOK_SECRET", value)} error={errors.JIRA_WEBHOOK_SECRET} secret />
               <Field label="Ready status" required value={config.READY_STATUS} onChange={(value) => updateField("READY_STATUS", value)} error={errors.READY_STATUS} />
               <Field label="In progress status" required value={config.IN_PROGRESS_STATUS} onChange={(value) => updateField("IN_PROGRESS_STATUS", value)} error={errors.IN_PROGRESS_STATUS} />
@@ -1210,7 +1625,6 @@ function SetupWizardApp() {
                   <FieldGuide
                     items={[
                       ["GitHub token", "Your main token for clone, push, and PR creation"],
-                      ["GH token alias", <>Optional. Use this only if you prefer the <code>GH_TOKEN</code> env var.</>],
                       ["Base branch", <>The branch new pull requests should target, usually <code>main</code>.</>]
                     ]}
                   />
@@ -1219,7 +1633,6 @@ function SetupWizardApp() {
             >
               <Toggle label="Require GitHub authentication" required value={config.REQUIRE_GITHUB_AUTH} onChange={(value) => updateField("REQUIRE_GITHUB_AUTH", value)} error={errors.REQUIRE_GITHUB_AUTH} />
               <Field label="GitHub token" required value={config.GITHUB_TOKEN} onChange={(value) => updateField("GITHUB_TOKEN", value)} error={errors.GITHUB_TOKEN} secret />
-              <Field label="GH token alias" optional value={config.GH_TOKEN} onChange={(value) => updateField("GH_TOKEN", value)} error={errors.GH_TOKEN} secret />
               <Field label="Base branch" required value={config.WORKFLOW_BASE_BRANCH} onChange={(value) => updateField("WORKFLOW_BASE_BRANCH", value)} error={errors.WORKFLOW_BASE_BRANCH} placeholder="main" />
               <ConnectionTestPanel
                 buttonClassName={`primary github-check-button ${gitHubCheck ? (gitHubCheck.ok ? "is-pass" : "is-fail") : ""}`}
@@ -1369,8 +1782,7 @@ function SetupWizardApp() {
                   />
                   <FieldGuide
                     items={[
-                      ["ngrok enable", "Turn this on only if you want PRonto to expose the local Jira webhook publicly."],
-                      ["Authtoken", "Required when ngrok is enabled. Copy it from the Getting Started section of your ngrok dashboard."],
+                      ["Authtoken", "Required for public webhook access. Copy it from the Getting Started section of your ngrok dashboard."],
                       ["API key", "Needed only if you want PRonto to verify or auto-provision a reserved domain."],
                       ["Reserved domain", "Optional. Leave blank for an ephemeral URL, or enter your reserved ngrok domain if you want a stable webhook URL."],
                       ["Webhook path", <code>/webhooks/jira-transition</code>]
@@ -1404,11 +1816,29 @@ function SetupWizardApp() {
                           </a>
                         </li>
                       </ul>
+                      <h4>Authtoken</h4>
                       <ol className="plain-list ordered">
                         <li>Create or sign in to your ngrok account.</li>
                         <li>Copy your authtoken from the dashboard and paste it here.</li>
-                        <li>If you want a stable webhook URL, reserve a domain and add both the domain and an ngrok API key here.</li>
-                        <li>Run <strong>Test Public Access</strong> before launch.</li>
+                      </ol>
+                      <h4>API key</h4>
+                      <ol className="plain-list ordered">
+                        <li>Sign in to ngrok.</li>
+                        <li>Open the dashboard API page.</li>
+                        <li>Create a new API key.</li>
+                        <li>Copy it and store it safely.</li>
+                      </ol>
+                      <h4>Reserved domain</h4>
+                      <ol className="plain-list ordered">
+                        <li>Sign in to your ngrok dashboard.</li>
+                        <li>Open Domains in the dashboard.</li>
+                        <li>Click New Domain or + New.</li>
+                        <li>Copy the domain name.</li>
+                      </ol>
+                      <h4>Finish setup</h4>
+                      <ol className="plain-list ordered">
+                        <li>Turn on public access if you want Jira to reach PRonto from the internet.</li>
+                        <li>Run <strong>Test Public Access</strong> before launch when ngrok is enabled.</li>
                         <li>After launch, use the ngrok URL plus <code>/webhooks/jira-transition</code> in Jira.</li>
                       </ol>
                       <p className="muted">
@@ -1440,7 +1870,17 @@ function SetupWizardApp() {
             <div className="two-column">
               <div className="step-main-card">
                 <p className="eyebrow">Launch Review</p>
-                <h3>Ready to launch PRonto.</h3>
+                <h3>{launchReadyForReview ? "Ready to launch PRonto." : "Finish these checks before launch."}</h3>
+                {!launchReadyForReview ? (
+                  <div className="guide-section guide-error-help">
+                    <p className="muted">PRonto should only reach the Launch Console after every required setup check has passed.</p>
+                    <ul className="plain-list ordered">
+                      {launchBlockers.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 <dl className="review-list">
                   {reviewItems.map(([label, value]) => (
                     <div key={label}>
@@ -1451,13 +1891,123 @@ function SetupWizardApp() {
                 </dl>
               </div>
               <div className="guide-card guide-card-compact">
-                <h3>After launch</h3>
+                <h3>Next up</h3>
                 <ol className="plain-list ordered">
-                  <li>Create the Jira webhook pointing to <code>/webhooks/jira-transition</code>.</li>
-                  <li>Use a JQL filter matching your Ready to In Progress transition.</li>
+                  <li>Review the Jira webhook instructions on the next step.</li>
+                  <li>Launch PRonto after the webhook step is complete.</li>
                   <li>Add <code>GitHub Repo: owner/repo</code> to the Jira ticket description.</li>
                   <li>Move a test ticket to In Progress and watch the PRonto console.</li>
                 </ol>
+              </div>
+            </div>
+          )}
+
+          {currentStep.id === "webhook" && (
+            <div className="two-column webhook-page">
+              <div className="step-main-card">
+                <p className="eyebrow">Jira Webhook</p>
+                <h3>Prepare the Jira transition webhook.</h3>
+                <p className="muted webhook-hero-copy">
+                  This step gathers the exact webhook settings Jira needs before you move into the Launch Console.
+                </p>
+                {!isNgrokEnabled ? (
+                  <div className="guide-section guide-error-help">
+                    <h4>Public access is disabled</h4>
+                    <p className="muted">
+                      Jira cannot send webhooks to PRonto until public access is enabled. Go back to <strong>Public Access</strong>, turn on ngrok, and run the public access check before configuring the Jira webhook.
+                    </p>
+                  </div>
+                ) : null}
+                <div className="guide-section">
+                  <h4>Webhook URL</h4>
+                  {!isNgrokEnabled ? (
+                    <div className="webhook-url-card">
+                      <span className="webhook-url-chip">Unavailable</span>
+                      <p className="muted">No public webhook URL is available while ngrok is disabled.</p>
+                    </div>
+                  ) : configuredWebhookUrl ? (
+                    <div className="webhook-url-card is-ready">
+                      <span className="webhook-url-chip">Ready now</span>
+                      <p className="muted">A reserved ngrok domain is configured, so you can use this final webhook URL in Jira right now.</p>
+                      <p className="webhook-url-value"><code>{configuredWebhookUrl}</code></p>
+                    </div>
+                  ) : (
+                    <div className="webhook-url-card">
+                      <span className="webhook-url-chip">Available after launch</span>
+                      <p className="muted">You are using an ephemeral ngrok URL, so the final webhook URL will appear in the Launch Console after PRonto starts.</p>
+                      <p className="muted">You can still open Jira webhook settings now, then paste the live URL in after launch.</p>
+                    </div>
+                  )}
+                </div>
+                <div className="guide-section jira-webhook-example">
+                  <h4>Jira example</h4>
+                  <p className="muted">Use this as a visual reference when configuring the webhook in Jira.</p>
+                  <div className="jira-webhook-shot">
+                    <div className="jira-webhook-shot-header">
+                      <strong>Issue related events</strong>
+                      <p>You can specify a JQL query to send only events triggered by matching issues.</p>
+                    </div>
+                    <div className="jira-webhook-shot-query">
+                      <span className="jira-webhook-shot-check">✓</span>
+                      <code>project = KAN AND status changed from "{config.READY_STATUS}" to "{config.IN_PROGRESS_STATUS}"</code>
+                    </div>
+                    <div className="jira-webhook-shot-link">Syntax help</div>
+                    <div className="jira-webhook-shot-grid">
+                      <div className="jira-webhook-shot-column">
+                        <span className="jira-webhook-shot-label">Issue</span>
+                        <div className="jira-webhook-shot-option is-checked">updated</div>
+                        <div className="jira-webhook-shot-option">created</div>
+                        <div className="jira-webhook-shot-option">deleted</div>
+                      </div>
+                      <div className="jira-webhook-shot-column">
+                        <span className="jira-webhook-shot-label">Worklog</span>
+                        <div className="jira-webhook-shot-option">created</div>
+                        <div className="jira-webhook-shot-option">updated</div>
+                        <div className="jira-webhook-shot-option">deleted</div>
+                      </div>
+                      <div className="jira-webhook-shot-column">
+                        <span className="jira-webhook-shot-label">Comment</span>
+                        <div className="jira-webhook-shot-option">created</div>
+                        <div className="jira-webhook-shot-option">updated</div>
+                        <div className="jira-webhook-shot-option">deleted</div>
+                      </div>
+                      <div className="jira-webhook-shot-column">
+                        <span className="jira-webhook-shot-label">Attachment</span>
+                        <div className="jira-webhook-shot-option">created</div>
+                        <div className="jira-webhook-shot-option">deleted</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="guide-card guide-card-compact">
+                <div className="guide-section">
+                  <h4>Before you continue</h4>
+                  <ol className="plain-list ordered webhook-side-list">
+                    {!isNgrokEnabled ? (
+                      <li>Enable public access first so Jira has a public URL to call.</li>
+                    ) : (
+                      <li>If you use a reserved ngrok domain, add the webhook URL in Jira now.</li>
+                    )}
+                    {!isNgrokEnabled ? (
+                      <li>Run the public access check after enabling ngrok.</li>
+                    ) : (
+                      <li>If you use an ephemeral ngrok URL, continue to Launch Console, then copy the live URL into Jira after PRonto starts.</li>
+                    )}
+                    {!isNgrokEnabled ? (
+                      <li>Return here after public access is enabled and tested.</li>
+                    ) : (
+                      <li>After launch, use the webhook delivery test to confirm Jira can reach PRonto.</li>
+                    )}
+                  </ol>
+                </div>
+                <div aria-hidden="true" style={{ height: "0.5rem" }} />
+                <GuideLinkCard
+                  title="Open Jira webhook settings"
+                  description="Open Jira's webhook configuration page and create or update the webhook that points at PRonto."
+                  href={config.JIRA_BASE_URL ? `${config.JIRA_BASE_URL.replace(/\/+$/, "")}/plugins/servlet/webhooks` : "https://support.atlassian.com/jira-cloud-administration/docs/manage-webhooks/"}
+                  linkLabel={config.JIRA_BASE_URL ? "Open webhook settings in Jira" : "Open Jira webhook docs"}
+                />
               </div>
             </div>
           )}
@@ -1471,7 +2021,7 @@ function SetupWizardApp() {
                   Generate the environment config, build the image, replace the running container if needed, and check service health from one launch sequence.
                 </p>
                 <div className="action-row">
-                  <button className={`primary hero-primary launch-button ${launchSucceeded ? "is-pass" : ""}`} onClick={() => void runSetup()} disabled={isBusy}>
+                  <button className={`primary hero-primary launch-button ${launchSucceeded ? "is-pass" : ""}`} onClick={() => void runSetup()} disabled={isBusy || !launchReadyForReview}>
                     {isBusy ? "Launching..." : "Launch PRonto"}
                   </button>
                   <button
@@ -1484,6 +2034,7 @@ function SetupWizardApp() {
                 </div>
                 <div className="activity-card launch-activity">
                   <h4>Launch sequence</h4>
+                  {!launchReadyForReview ? <p className="muted">Return to the previous steps and complete the remaining checks before launch.</p> : null}
                   <ul className="plain-list">
                     {activity.length === 0 ? <li>No actions yet.</li> : activity.map((item) => <li key={item}>{item}</li>)}
                   </ul>
@@ -1504,13 +2055,78 @@ function SetupWizardApp() {
                     )}
                   </ul>
                 </div>
+                {codexDeviceLogin ? (
+                  <div className="activity-card launch-activity">
+                    <h4>Connect Codex</h4>
+                    <p className="muted">Complete the device login in your browser, then return here and wait for PRonto to continue.</p>
+                    <ol className="plain-list ordered">
+                      <li>Open the OpenAI sign-in page.</li>
+                      <li>Enter the one-time code shown below.</li>
+                      <li>Return to this screen after signing in.</li>
+                    </ol>
+                    <div className="action-row">
+                      <a className="secondary button-link" href={codexDeviceLogin.url} target="_blank" rel="noreferrer">
+                        Open Sign-In Page
+                      </a>
+                      <button className="secondary" onClick={() => void copyCodexCode()}>
+                        {copiedCodexCode ? "Code Copied" : "Copy Code"}
+                      </button>
+                    </div>
+                    <div className="guide-section">
+                      <h4>One-time code</h4>
+                      <p><code>{codexDeviceLogin.code}</code></p>
+                      <p className="muted">{codexDeviceLogin.expiryText || "This code expires shortly."}</p>
+                      <p className="muted">Only enter this code on the OpenAI sign-in page.</p>
+                    </div>
+                    <ConnectionTestPanel
+                      buttonClassName={`primary github-check-button ${codexContainerCheck ? (codexContainerCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                      buttonLabel={isCheckingCodexContainer ? "Testing Codex login..." : "Test Codex Login"}
+                      onClick={() => void runCodexContainerCheck()}
+                      disabled={isCheckingCodexContainer || !launchSucceeded}
+                      readyLabel="✓ Codex login confirmed"
+                      resultTitle="Codex container login result"
+                      result={codexContainerCheck}
+                      errorHelp="This test confirms the running PRonto container can use the Codex CLI session you just completed."
+                    />
+                  </div>
+                ) : null}
+                {!hideJiraWebhookSection ? (
+                  <div className="activity-card launch-activity">
+                    <div className="activity-card-header">
+                      <h4>Webhook delivery</h4>
+                      {jiraWebhookCheck?.ok ? (
+                        <button
+                          className="activity-card-close"
+                          onClick={() => setHideJiraWebhookSection(true)}
+                          aria-label="Dismiss webhook delivery section"
+                          title="Dismiss"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="muted">
+                      After PRonto is running, send a safe test webhook through the public URL to confirm routing and secret handling before trying a real Jira transition.
+                    </p>
+                    <ConnectionTestPanel
+                      buttonClassName={`primary jira-check-button ${jiraWebhookCheck ? (jiraWebhookCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                      buttonLabel={isCheckingJiraWebhook ? "Testing webhook..." : "Test Jira Webhook Delivery"}
+                      onClick={() => void runJiraWebhookCheck()}
+                      disabled={isCheckingJiraWebhook || !launchSucceeded}
+                      readyLabel="✓ webhook delivery confirmed"
+                      resultTitle="Jira webhook delivery result"
+                      result={jiraWebhookCheck}
+                      errorHelp={jiraWebhookErrorHelp}
+                    />
+                  </div>
+                ) : null}
               </div>
               <div className="guide-card terminal-side-panel">
                 <div className="run-console-brand">
                   <img src={prontoRocket} alt="" className="run-console-mark brand-logo-inline" />
                   <h3>Console output</h3>
                 </div>
-                <pre>{status?.logs || "No logs yet."}</pre>
+                <pre ref={consoleOutputRef} onScroll={handleConsoleScroll}>{status?.logs || "No logs yet."}</pre>
               </div>
             </div>
           )}
@@ -1523,7 +2139,7 @@ function SetupWizardApp() {
               <button
                 className="primary hero-primary"
                 onClick={() => void nextStep()}
-                disabled={isBusy || (currentStepRequiresPassingTest && !currentStepHasPassingTest)}
+                disabled={isBusy || (currentStepRequiresPassingTest && !currentStepHasPassingTest) || (currentStep.id === "review" && !launchReadyForReview)}
               >
                 Next
               </button>
@@ -1550,6 +2166,27 @@ function SummaryStep(props: { number: string; title: string; text: string }) {
 function extractPullRequestUrls(text: string): string[] {
   const matches = text.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g) || [];
   return Array.from(new Set(matches));
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function extractCodexDeviceLogin(text: string) {
+  const cleaned = stripAnsi(text || "");
+  const urlMatch = cleaned.match(/https:\/\/auth\.openai\.com\/codex\/device/i);
+  const codeMatch = cleaned.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/);
+  const expiryMatch = cleaned.match(/expires in\s+([^) \n]+)/i);
+
+  if (!urlMatch || !codeMatch) {
+    return null;
+  }
+
+  return {
+    url: urlMatch[0],
+    code: codeMatch[0],
+    expiryText: expiryMatch ? `Code expires in ${expiryMatch[1]}.` : ""
+  };
 }
 
 function GuideChecklist(props: { title: string; items: string[] }) {

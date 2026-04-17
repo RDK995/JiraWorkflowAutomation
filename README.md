@@ -318,7 +318,56 @@ docker run --env-file .env -p 3000:3000 \
   --name jira-automation -d jira-workflow-automation
 ```
 
-Useful checks:
+Set these required values in `.env`:
+
+- `JIRA_BASE_URL=https://<your-site>.atlassian.net`
+- `JIRA_USER_EMAIL=<jira-email>`
+- `JIRA_API_TOKEN=<jira-api-token>`
+- `READY_STATUS="To Do"`
+- `IN_PROGRESS_STATUS="In Progress"`
+- `IN_REVIEW_STATUS="In Review"`
+- `GITHUB_TOKEN=<github-pat>` (recommended; `GH_TOKEN` also supported)
+- `REQUIRE_GITHUB_AUTH=true`
+- `CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox`
+
+External key setup:
+
+- Jira API token:
+  - Create at Atlassian account security: `https://id.atlassian.com/manage-profile/security/api-tokens`
+  - Put Jira site URL/email/token into:
+    - `JIRA_BASE_URL`
+    - `JIRA_USER_EMAIL`
+    - `JIRA_API_TOKEN`
+- GitHub token (for push + PR):
+  - Create PAT at GitHub settings: `https://github.com/settings/tokens`
+  - Recommended fine-grained token permissions:
+    - Repository `Contents: Read and write`
+    - Repository `Pull requests: Read and write`
+    - Repository `Metadata: Read`
+  - Set in `.env`: `GITHUB_TOKEN=<token>` (or `GH_TOKEN`)
+- OpenAI/Codex access:
+  - API key mode: set `CODEX_API_KEY` (or `OPENAI_API_KEY`) and `CODEX_BOOTSTRAP_LOGIN=true`
+  - Device login mode: keep API key empty and use persisted login (see below)
+
+Codex auth options (pick one):
+
+- API key mode:
+  - `CODEX_BOOTSTRAP_LOGIN=true`
+  - `CODEX_API_KEY=<openai-api-key>` (or `OPENAI_API_KEY`)
+- Persistent interactive login mode:
+  - `CODEX_BOOTSTRAP_LOGIN=false`
+  - Run one-time: `docker exec -it jira-automation codex login`
+  - State persists in `-v codex-state:/data/codex`
+
+Optional but recommended:
+
+- `JIRA_WEBHOOK_SECRET=<shared-secret>` (leave empty unless Jira webhook secret is configured)
+- `NGROK_ENABLE=true`
+- `NGROK_AUTHTOKEN=<ngrok-authtoken>`
+- `NGROK_DOMAIN=<reserved-domain.ngrok-free.dev>`
+- `NGROK_API_KEY=<ngrok-api-key>` (used to auto-provision/check reserved domain)
+
+## 2) Build and run
 
 ```bash
 curl -sS http://localhost:3000/health

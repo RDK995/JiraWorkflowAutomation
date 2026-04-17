@@ -170,10 +170,95 @@ test("runContainer uses configured env file path", async () => {
   assert.ok(seenArgs.includes("claude-state:/data/claude"));
 });
 
+test("buildImage returns a structured response when the docker build fails", async () => {
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      if (file === "docker" && args[0] === "context") {
+        return { stdout: "default" };
+      }
+      const error = new Error("failed");
+      error.stderr = "The command '/bin/sh -c pip install --no-cache-dir -r requirements.txt' returned a non-zero code: 1";
+      throw error;
+    })
+  });
+
+  const result = await service.buildImage();
+  assert.equal(result.ok, false);
+  assert.equal(result.diagnosis?.code, "docker_build_dependency_error");
+});
+
+test("runDockerNetworkCheck reports registry reachability", async () => {
+  const calls = [];
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      calls.push({ file, args });
+      if (file === "docker" && args[0] === "context") {
+        return { stdout: "default" };
+      }
+      if (file === "docker" && args[0] === "version") {
+        return { stdout: "Client and Server" };
+      }
+      if (file === "docker" && args[0] === "run") {
+        return { stdout: "" };
+      }
+      throw new Error("unexpected");
+    })
+  });
+
+  const result = await service.runDockerNetworkCheck();
+  assert.equal(result.ok, true);
+  assert.equal(result.checks.length, 3);
+  assert.equal(calls.filter((call) => call.args[0] === "run").length, 3);
+});
+
+test("resetDockerBuilderCache prunes the builder cache", async () => {
+  let seen;
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      if (file === "docker" && args[0] === "context") {
+        return { stdout: "default" };
+      }
+      seen = { file, args };
+      return { stdout: "Deleted build cache objects" };
+    })
+  });
+
+  const result = await service.resetDockerBuilderCache();
+  assert.deepEqual(seen, { file: "docker", args: ["builder", "prune", "-af"] });
+  assert.equal(result.ok, true);
+});
+
+test("getCodexContainerAuthStatus verifies codex inside the running container", async () => {
+  const seen = [];
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      seen.push({ file, args });
+      if (file === "docker" && args[0] === "ps") {
+        return { stdout: "Up 3 minutes" };
+      }
+      if (file === "docker" && args[0] === "exec" && args[4] === "codex --version") {
+        return { stdout: "codex 1.2.3" };
+      }
+      if (file === "docker" && args[0] === "exec" && args[4] === "codex login status") {
+        return { stdout: "Logged in as demo@example.com" };
+      }
+      throw new Error("unexpected");
+    })
+  });
+
+  const result = await service.getCodexContainerAuthStatus();
+  assert.equal(result.ok, true);
+  assert.equal(result.checks[1].ok, true);
+  assert.equal(seen.filter((call) => call.args[0] === "exec").length, 2);
+});
+
 test("startColima runs colima start", async () => {
   let seen;
   const service = createDockerService({
     execFileImpl: createExecFileMock((file, args) => {
+      if (file === "which") {
+        return { stdout: "/usr/local/bin/colima" };
+      }
       seen = { file, args };
       return { stdout: "starting" };
     })
@@ -182,6 +267,38 @@ test("startColima runs colima start", async () => {
   const result = await service.startColima();
   assert.deepEqual(seen, { file: "colima", args: ["start", "--runtime", "docker"] });
   assert.equal(result.ok, true);
+});
+
+test("startColima returns a structured response when colima is missing", async () => {
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      if (file === "which" && args[0] === "colima") {
+        throw new Error("not found");
+      }
+      throw new Error("unexpected");
+    })
+  });
+
+  const result = await service.startColima();
+  assert.equal(result.ok, false);
+  assert.equal(result.diagnosis?.code, "colima_not_installed");
+});
+
+test("startColima returns a structured response when start fails", async () => {
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      if (file === "which" && args[0] === "colima") {
+        return { stdout: "/usr/local/bin/colima" };
+      }
+      const error = new Error("failed");
+      error.stderr = "FATA[0000] error starting vm";
+      throw error;
+    })
+  });
+
+  const result = await service.startColima();
+  assert.equal(result.ok, false);
+  assert.equal(result.diagnosis?.code, "colima_start_failed");
 });
 
 test("openDockerDesktop launches Docker on macOS", async () => {
@@ -197,6 +314,21 @@ test("openDockerDesktop launches Docker on macOS", async () => {
   const result = await service.openDockerDesktop();
   assert.deepEqual(seen, { file: "open", args: ["-a", "Docker"] });
   assert.equal(result.ok, true);
+});
+
+test("openDockerDesktop returns a structured response when Docker Desktop is missing", async () => {
+  const service = createDockerService({
+    platform: "darwin",
+    execFileImpl: createExecFileMock(() => {
+      const error = new Error("missing");
+      error.stderr = "Unable to find application named 'Docker'";
+      throw error;
+    })
+  });
+
+  const result = await service.openDockerDesktop();
+  assert.equal(result.ok, false);
+  assert.equal(result.diagnosis?.code, "docker_desktop_not_installed");
 });
 
 test("listDockerContexts returns parsed context rows", async () => {
