@@ -22,7 +22,7 @@ export const DEFAULT_CONFIG: Config = {
   WORKFLOW_BASE_BRANCH: "main",
   CODEX_EXEC_ARGS: "--dangerously-bypass-approvals-and-sandbox",
   ANTHROPIC_API_KEY: "",
-  CLAUDE_EXEC_ARGS: "--allowedTools Bash,Edit,Write,Read",
+  CLAUDE_EXEC_ARGS: "--permission-mode auto --allowedTools Bash,Read,Edit,Write",
   NGROK_ENABLE: "true",
   NGROK_AUTHTOKEN: "",
   NGROK_API_KEY: "",

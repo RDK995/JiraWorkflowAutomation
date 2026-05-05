@@ -19,8 +19,27 @@ TARGET_DIR="${SCRIPT_DIR}"
 TARGET_REPO_SLUG=""
 TARGET_REPO_CLONE_URL=""
 CONTAINER_SAFE_CODEX_EXEC_ARGS="--dangerously-bypass-approvals-and-sandbox"
+CONTAINER_SAFE_CLAUDE_EXEC_ARGS="--permission-mode auto --allowedTools Bash,Read,Edit,Write"
 CODEX_EXEC_ARGS="${CODEX_EXEC_ARGS:-${CONTAINER_SAFE_CODEX_EXEC_ARGS}}"
-CLAUDE_EXEC_ARGS="${CLAUDE_EXEC_ARGS:---allowedTools Bash,Edit,Write,Read}"
+CLAUDE_EXEC_ARGS="${CLAUDE_EXEC_ARGS:-${CONTAINER_SAFE_CLAUDE_EXEC_ARGS}}"
+
+strip_wrapping_quotes() {
+  local value="$1"
+  if [[ "${#value}" -ge 2 ]]; then
+    local first="${value:0:1}"
+    local last="${value: -1}"
+    if [[ "${first}" == "${last}" && ( "${first}" == "'" || "${first}" == '"' ) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+  fi
+  echo "${value}"
+}
+
+CLAUDE_EXEC_ARGS="$(strip_wrapping_quotes "${CLAUDE_EXEC_ARGS}")"
+if [[ "${CLAUDE_EXEC_ARGS}" == "--allowedTools Bash,Edit,Write,Read" || "${CLAUDE_EXEC_ARGS}" == "--permission-mode bypassPermissions" ]]; then
+  echo "Replacing legacy Claude exec args with Docker-safe auto permission mode."
+  CLAUDE_EXEC_ARGS="${CONTAINER_SAFE_CLAUDE_EXEC_ARGS}"
+fi
 if [[ "${AI_AGENT}" == "claude" ]]; then
   AI_AGENT_LABEL="Claude Code"
 else
@@ -135,6 +154,22 @@ run_with_progress_updates() {
   wait "${command_pid}"
 }
 
+ensure_branch_has_commits() {
+  if git -C "${TARGET_DIR}" diff --quiet && git -C "${TARGET_DIR}" diff --cached --quiet; then
+    :
+  else
+    echo "${AI_AGENT_LABEL} left uncommitted changes. Committing them before push."
+    git -C "${TARGET_DIR}" add -A
+    git -C "${TARGET_DIR}" commit -m "${JIRA_KEY}: implement requested changes"
+  fi
+
+  if git -C "${TARGET_DIR}" diff --quiet "origin/${BASE_BRANCH}...HEAD"; then
+    echo "${AI_AGENT_LABEL} did not produce any commits different from ${BASE_BRANCH}; refusing to push or create an empty pull request." >&2
+    echo "Check the ${AI_AGENT_LABEL} output above for permission prompts, skipped edits, or test failures, then retry the Jira transition." >&2
+    exit 1
+  fi
+}
+
 resolve_target_repo "${TARGET_REPO_INPUT}"
 
 if ! gh auth status -h github.com >/dev/null 2>&1; then
@@ -190,6 +225,8 @@ else
   exit 1
 fi
 
+ensure_branch_has_commits
+
 echo "Step 6 of 6: Pushing the working branch to GitHub."
 if ! git -C "${TARGET_DIR}" push -u origin "${BRANCH_NAME}"; then
   echo "GitHub rejected the first push because the remote branch moved. Retrying safely with force-with-lease."
@@ -201,7 +238,7 @@ echo "GitHub branch push completed."
 ISSUE_SUMMARY_LINE="$(head -n 1 "${TARGET_DIR}/${SPEC_FILE}")"
 PR_SUMMARY="${ISSUE_SUMMARY_LINE#\# ${JIRA_KEY}: }"
 PR_TITLE="${JIRA_KEY}: ${PR_SUMMARY}"
-PR_BODY_FILE="${TARGET_DIR}/${SPEC_DIR}/${JIRA_KEY}-pr-body.md"
+PR_BODY_FILE="$(mktemp "/tmp/${JIRA_KEY}-pr-body.XXXXXX")"
 
 cat "${TARGET_DIR}/${SPEC_FILE}" > "${PR_BODY_FILE}"
 

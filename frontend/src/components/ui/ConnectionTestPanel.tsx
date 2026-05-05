@@ -2,10 +2,12 @@ import type { ReadinessCheckResponse } from "../../features/setup-wizard/types/a
 import { ResultList } from "./ResultList";
 
 type ConnectionTestPanelProps = {
-  buttonClassName: string;
-  buttonLabel: string;
-  onClick: () => void;
+  buttonClassName?: string;
+  buttonLabel?: string;
+  onClick?: () => void;
   disabled?: boolean;
+  hideButton?: boolean;
+  pendingLabel?: string;
   readyLabel: string;
   resultTitle: string;
   result: ReadinessCheckResponse | null;
@@ -16,10 +18,13 @@ export function ConnectionTestPanel(props: ConnectionTestPanelProps) {
   return (
     <div className="check-block">
       <div className="action-row">
-        <button className={props.buttonClassName} onClick={props.onClick} disabled={props.disabled} type="button">
-          {props.buttonLabel}
-        </button>
+        {!props.hideButton ? (
+          <button className={props.buttonClassName} onClick={props.onClick} disabled={props.disabled} type="button">
+            {props.buttonLabel}
+          </button>
+        ) : null}
         {props.result?.ok ? <span className="check-pass">{props.readyLabel}</span> : null}
+        {!props.result?.ok && props.pendingLabel ? <span className="check-pending">{props.pendingLabel}</span> : null}
       </div>
       {props.result ? (
         <div className="activity-card">

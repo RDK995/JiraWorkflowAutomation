@@ -130,6 +130,19 @@ test("serializeEnv uses the Docker-safe Codex exec default", () => {
   assert.match(envText, /CODEX_EXEC_ARGS=--dangerously-bypass-approvals-and-sandbox/);
 });
 
+test("serializeEnv uses the Docker-safe Claude permission default", () => {
+  const envText = serializeEnv({
+    JIRA_BASE_URL: "https://example.atlassian.net",
+    JIRA_USER_EMAIL: "user@example.com",
+    JIRA_API_TOKEN: "jira-token",
+    GITHUB_TOKEN: "ghp_token",
+    AI_AGENT: "claude",
+    NGROK_ENABLE: "false"
+  });
+
+  assert.match(envText, /CLAUDE_EXEC_ARGS="--permission-mode auto --allowedTools Bash,Read,Edit,Write"/);
+});
+
 test("serializeEnv preserves disabled ngrok state", () => {
   const envText = serializeEnv({
     JIRA_BASE_URL: "https://example.atlassian.net",
@@ -146,6 +159,16 @@ test("serializeEnv preserves disabled ngrok state", () => {
 test("parseEnvFile preserves explicit legacy Codex exec args for existing environments", () => {
   const parsed = parseEnvFile("CODEX_EXEC_ARGS=--full-auto\n");
   assert.equal(parsed.CODEX_EXEC_ARGS, "--full-auto");
+});
+
+test("parseEnvFile migrates legacy Claude allowedTools args", () => {
+  const parsed = parseEnvFile('CLAUDE_EXEC_ARGS="--allowedTools Bash,Edit,Write,Read"\n');
+  assert.equal(parsed.CLAUDE_EXEC_ARGS, "--permission-mode auto --allowedTools Bash,Read,Edit,Write");
+});
+
+test("parseEnvFile migrates root-blocked Claude bypassPermissions args", () => {
+  const parsed = parseEnvFile('CLAUDE_EXEC_ARGS="--permission-mode bypassPermissions"\n');
+  assert.equal(parsed.CLAUDE_EXEC_ARGS, "--permission-mode auto --allowedTools Bash,Read,Edit,Write");
 });
 
 test("validateConfig rejects unsafe Codex exec args", () => {

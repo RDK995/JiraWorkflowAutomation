@@ -744,6 +744,11 @@ a:hover {
   font-weight: 670;
 }
 
+.check-pending {
+  color: var(--text-muted);
+  font-weight: 650;
+}
+
 .guide-checklist {
   display: grid;
   gap: 0.3rem;
@@ -775,6 +780,36 @@ a:hover {
 
 .guide-error-help p {
   margin: 0;
+}
+
+.guide-section p,
+.guide-section li,
+.activity-card p,
+.activity-card li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.guide-section code,
+.activity-card code {
+  display: inline-block;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  vertical-align: top;
+}
+
+.launch-activity .action-row + .guide-section {
+  margin-top: 0.5rem;
+}
+
+.launch-activity .check-block {
+  margin-top: 0.85rem;
+}
+
+.launch-auth-actions {
+  margin-top: 0.2rem;
 }
 
 .codex-advanced {
@@ -1241,6 +1276,12 @@ a.button-link:hover {
   background: rgba(79, 125, 255, 0.08);
 }
 
+a.button-link.is-disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
 button:hover:not(:disabled) {
   transform: translateY(-1px);
 }
@@ -1262,6 +1303,10 @@ button:disabled {
   min-width: 10.4rem;
 }
 
+.hero-danger {
+  min-width: 10.4rem;
+}
+
 .docker-check-button.is-pass,
 .jira-check-button.is-pass,
 .github-check-button.is-pass,
@@ -1279,6 +1324,15 @@ button:disabled {
 .github-check-button.is-fail {
   background: linear-gradient(180deg, #de5b72 0%, #bf4258 100%);
   box-shadow: 0 13px 26px rgba(191, 66, 88, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.stop-button {
+  background: linear-gradient(180deg, #e4687d 0%, #cf4b61 52%, #b9374d 100%);
+  box-shadow: 0 13px 26px rgba(191, 66, 88, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.stop-button:hover:not(:disabled) {
+  box-shadow: 0 18px 34px rgba(191, 66, 88, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .launch-activity {
