@@ -155,15 +155,16 @@ run_with_progress_updates() {
 }
 
 ensure_branch_has_commits() {
-  if git -C "${TARGET_DIR}" diff --quiet && git -C "${TARGET_DIR}" diff --cached --quiet; then
-    :
-  else
+  if ! git -C "${TARGET_DIR}" diff --quiet -- . ":(exclude)${SPEC_FILE}" || ! git -C "${TARGET_DIR}" diff --cached --quiet -- . ":(exclude)${SPEC_FILE}"; then
     echo "${AI_AGENT_LABEL} left uncommitted changes. Committing them before push."
-    git -C "${TARGET_DIR}" add -A
-    git -C "${TARGET_DIR}" commit -m "${JIRA_KEY}: implement requested changes"
+    git -C "${TARGET_DIR}" add -A -- . ":(exclude)${SPEC_FILE}"
+    git -C "${TARGET_DIR}" reset -q -- "${SPEC_FILE}" 2>/dev/null || true
+    if ! git -C "${TARGET_DIR}" diff --cached --quiet -- . ":(exclude)${SPEC_FILE}"; then
+      git -C "${TARGET_DIR}" commit -m "${JIRA_KEY}: implement requested changes"
+    fi
   fi
 
-  if git -C "${TARGET_DIR}" diff --quiet "origin/${BASE_BRANCH}...HEAD"; then
+  if git -C "${TARGET_DIR}" diff --quiet "origin/${BASE_BRANCH}...HEAD" -- . ":(exclude)${SPEC_FILE}"; then
     echo "${AI_AGENT_LABEL} did not produce any commits different from ${BASE_BRANCH}; refusing to push or create an empty pull request." >&2
     echo "Check the ${AI_AGENT_LABEL} output above for permission prompts, skipped edits, or test failures, then retry the Jira transition." >&2
     exit 1
