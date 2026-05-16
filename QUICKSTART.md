@@ -14,7 +14,13 @@ Start the setup API:
 npm run dev:setup-api
 ```
 
-Start the frontend in a second terminal:
+Start the auth broker in a second terminal:
+
+```bash
+npm run dev:auth-broker
+```
+
+Start the frontend in a third terminal:
 
 ```bash
 npm run dev:frontend
@@ -29,6 +35,23 @@ Use the wizard to:
 - build the Docker image
 - run the `jira-automation` container
 - watch health and logs
+
+## Auth Broker Transport
+
+`setup-api` proxies auth through the stable `/api/auth/*` contract and supports:
+
+- `AUTH_BROKER_TRANSPORT=launcher_http` (default)
+- `AUTH_BROKER_TRANSPORT=standalone_http`
+- `AUTH_BROKER_BASE_URL=http://127.0.0.1:3020` (default)
+
+Local dev emulation only:
+
+- `AUTH_BROKER_DEV_EMULATION=true` allows setup-api to spawn a local dev auth host when launcher transport is selected and unreachable.
+- `AUTH_BROKER_AUTOSTART=false` disables that dev-emulation autostart behavior.
+- `AUTH_BROKER_DEV_EMULATION_HOST=native` (default) starts the Rust launcher host in `launcher/src-tauri`.
+- `AUTH_BROKER_DEV_EMULATION_HOST=node` starts the legacy Node host for compatibility.
+
+Production expectation: launcher mode should use a launcher-managed auth host, not a user-managed Node runtime.
 
 ## Direct Docker Run
 

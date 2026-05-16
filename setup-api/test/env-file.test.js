@@ -25,7 +25,8 @@ test("saveConfig writes serialized env content for valid config", async () => {
     JIRA_USER_EMAIL: "user@example.com",
     JIRA_API_TOKEN: "jira-token",
     GITHUB_TOKEN: "ghp_token",
-    CODEX_API_KEY: "sk-token"
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
   });
 
   assert.equal(result.saved, true);
@@ -58,7 +59,8 @@ test("saveConfig preserves unknown env keys", async () => {
     JIRA_USER_EMAIL: "user@example.com",
     JIRA_API_TOKEN: "jira-token",
     GITHUB_TOKEN: "ghp_token",
-    CODEX_API_KEY: "sk-token"
+    CODEX_API_KEY: "sk-token",
+    NGROK_ENABLE: "false"
   });
 
   assert.equal(result.saved, true);

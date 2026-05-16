@@ -292,6 +292,7 @@ From the repo root:
 ```bash
 npm install
 npm run dev:setup-api
+npm run dev:auth-broker
 ```
 
 In a second terminal:
@@ -303,6 +304,29 @@ npm run dev:frontend
 Open the Vite URL, usually `http://localhost:5173`.
 
 This is the best path if you want guided config editing, Docker diagnostics, readiness checks, and a launch console.
+
+Auth broker transport configuration:
+
+- `AUTH_BROKER_TRANSPORT`
+  - `launcher_http` (default): setup-api targets a launcher-managed broker endpoint.
+  - `standalone_http`: setup-api targets a standalone broker process (useful in local development).
+- `AUTH_BROKER_BASE_URL`
+  - Broker base URL, default `http://127.0.0.1:3020`.
+- `AUTH_BROKER_DEV_EMULATION`
+  - Default `false`.
+  - When `true`, setup-api may emulate launcher hosting by spawning the local Node auth-broker process if unreachable.
+- `AUTH_BROKER_AUTOSTART`
+  - Default `true`.
+  - Only applies when `AUTH_BROKER_DEV_EMULATION=true`.
+- `AUTH_BROKER_DEV_EMULATION_HOST`
+  - Default `native`.
+  - `native`: setup-api dev emulation starts the Rust launcher host in `launcher/src-tauri`.
+  - `node`: setup-api dev emulation starts the legacy Node broker.
+
+Production posture:
+
+- End users should not manage a Node runtime for provider authentication.
+- In production launcher mode, interactive auth hosting is expected to be launcher-managed, and setup-api should proxy only.
 
 ### Option 2: Run The Automation Service Directly In Docker
 

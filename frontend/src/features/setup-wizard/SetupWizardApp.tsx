@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { ConnectionTestPanel } from "../../components/ui/ConnectionTestPanel";
 import { Field } from "../../components/ui/Field";
 import { ResultList } from "../../components/ui/ResultList";
@@ -10,14 +10,16 @@ import prontoHeroBg from "../../assets/pronto_design_kit/pronto-hero-bg.png";
 import prontoRocketLarge from "../../assets/pronto_design_kit/pronto-rocket-large.png";
 import prontoRocket from "../../assets/pronto_design_kit/pronto-rocket.png";
 import prontoStarsOverlay from "../../assets/pronto_design_kit/pronto-stars-overlay.png";
+import { getAuthBrokerHealth, getAuthSessionStatus, runAuthPreflight, startAuthSession, submitAuthCode, verifyAuthSession } from "./api/authBroker";
 import { apiGet, apiPost, getApiBase } from "./api/setupApi";
 import { STEP_FIELDS, STEPS } from "./constants/steps";
-import type { DockerContextResponse, DockerNetworkCheckResponse, DockerRecoveryResponse, PrereqResponse, ReadinessCheckResponse, StatusResponse, ValidationResponse } from "./types/api";
+import type { AuthBrokerHealthResponse, AuthPreflightResponse, AuthProvider, AuthSessionResponse, DockerContextResponse, DockerNetworkCheckResponse, DockerRecoveryResponse, PrereqResponse, ReadinessCheckResponse, StatusResponse, ValidationResponse } from "./types/api";
 import { DEFAULT_CONFIG, type Config } from "./types/config";
 
 function SetupWizardApp() {
   const apiBase = getApiBase();
   const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
+  const selectedAiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
   const dirtyConfigFieldsRef = useRef<Set<string>>(new Set());
   const consoleOutputRef = useRef<HTMLPreElement | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -32,10 +34,15 @@ function SetupWizardApp() {
   const [jiraCheck, setJiraCheck] = useState<ReadinessCheckResponse | null>(null);
   const [jiraWebhookCheck, setJiraWebhookCheck] = useState<ReadinessCheckResponse | null>(null);
   const [hideJiraWebhookSection, setHideJiraWebhookSection] = useState(false);
+  const [hideIntegrationLoginSection, setHideIntegrationLoginSection] = useState(false);
   const [gitHubCheck, setGitHubCheck] = useState<ReadinessCheckResponse | null>(null);
   const [integrationCheck, setIntegrationCheck] = useState<ReadinessCheckResponse | null>(null);
   const [ngrokCheck, setNgrokCheck] = useState<ReadinessCheckResponse | null>(null);
-  const [codexContainerCheck, setCodexContainerCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [integrationContainerCheck, setIntegrationContainerCheck] = useState<ReadinessCheckResponse | null>(null);
+  const [authBrokerHealth, setAuthBrokerHealth] = useState<AuthBrokerHealthResponse | null>(null);
+  const [authPreflight, setAuthPreflight] = useState<AuthPreflightResponse | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
+  const [authCodeSubmissionResult, setAuthCodeSubmissionResult] = useState<AuthSessionResponse | null>(null);
   const [isCheckingDocker, setIsCheckingDocker] = useState(false);
   const [isCheckingDockerBuild, setIsCheckingDockerBuild] = useState(false);
   const [isCheckingDockerNetwork, setIsCheckingDockerNetwork] = useState(false);
@@ -45,7 +52,11 @@ function SetupWizardApp() {
   const [isCheckingGitHub, setIsCheckingGitHub] = useState(false);
   const [isCheckingIntegration, setIsCheckingIntegration] = useState(false);
   const [isCheckingNgrok, setIsCheckingNgrok] = useState(false);
-  const [isCheckingCodexContainer, setIsCheckingCodexContainer] = useState(false);
+  const [isCheckingIntegrationContainer, setIsCheckingIntegrationContainer] = useState(false);
+  const [isCheckingAuthPreflight, setIsCheckingAuthPreflight] = useState(false);
+  const [isSubmittingAuthCode, setIsSubmittingAuthCode] = useState(false);
+  const [isVerifyingAuthSession, setIsVerifyingAuthSession] = useState(false);
+  const [hasSubmittedClaudeAuthCode, setHasSubmittedClaudeAuthCode] = useState(false);
   const [isCheckingSetupApi, setIsCheckingSetupApi] = useState(false);
   const [isStartingColima, setIsStartingColima] = useState(false);
   const [isOpeningDockerDesktop, setIsOpeningDockerDesktop] = useState(false);
@@ -54,19 +65,23 @@ function SetupWizardApp() {
   const [isSwitchingDockerContext, setIsSwitchingDockerContext] = useState(false);
   const [setupApiReachable, setSetupApiReachable] = useState<boolean | null>(null);
   const [setupApiError, setSetupApiError] = useState<string>("");
-  const [setupApiActionLabel, setSetupApiActionLabel] = useState("Start Setup API");
+  const [setupApiActionLabel, setSetupApiActionLabel] = useState("Start Local Services");
   const [dockerRecoveryMessage, setDockerRecoveryMessage] = useState<string>("");
   const [dockerBuildStartedAt, setDockerBuildStartedAt] = useState<number | null>(null);
   const [dockerBuildElapsedMs, setDockerBuildElapsedMs] = useState(0);
   const [dockerContexts, setDockerContexts] = useState<DockerContextResponse["contexts"]>([]);
   const [selectedDockerContext, setSelectedDockerContext] = useState("");
-  const [copiedCodexCode, setCopiedCodexCode] = useState(false);
+  const [copiedDeviceCode, setCopiedDeviceCode] = useState(false);
+  const [authCodeInput, setAuthCodeInput] = useState("");
   const [isConsolePinnedToBottom, setIsConsolePinnedToBottom] = useState(true);
   const [observedPullRequests, setObservedPullRequests] = useState<string[]>([]);
-  const [observedCodexDeviceLogin, setObservedCodexDeviceLogin] = useState<ReturnType<typeof extractCodexDeviceLogin>>(null);
+  const [observedDeviceLogin, setObservedDeviceLogin] = useState<ReturnType<typeof extractDeviceLogin>>(null);
   const [completedStepIndexes, setCompletedStepIndexes] = useState<number[]>([]);
   const [isNavigationLocked, setIsNavigationLocked] = useState(false);
   const [hasLaunchedThisSession, setHasLaunchedThisSession] = useState(false);
+  const launchSucceeded = Boolean(status?.docker.container.running);
+  const runStepIndex = STEPS.findIndex((step) => step.id === "run");
+  const integrationLoginConfirmed = Boolean(integrationContainerCheck?.ok);
 
   useEffect(() => {
     document.title = "PRonto";
@@ -152,17 +167,124 @@ function SetupWizardApp() {
       setObservedPullRequests((current) => Array.from(new Set([...current, ...status.createdPullRequests])));
     }
 
-    const currentDeviceLogin = extractCodexDeviceLogin(status.logs || "");
-    if (currentDeviceLogin) {
-      setObservedCodexDeviceLogin(currentDeviceLogin);
+    const currentDeviceLogin = extractDeviceLogin(status.logs || "", selectedAiAgent);
+    setObservedDeviceLogin(currentDeviceLogin);
+  }, [selectedAiAgent, status]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadBrokerHealth = async () => {
+      try {
+        const health = await getAuthBrokerHealth();
+        if (!cancelled) {
+          setAuthBrokerHealth(health);
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthBrokerHealth(null);
+        }
+      }
+    };
+
+    void loadBrokerHealth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (STEPS[stepIndex].id !== "run" || !launchSucceeded || integrationLoginConfirmed) {
+      return;
     }
-  }, [status]);
+
+    let cancelled = false;
+
+    const runPreflightAndStart = async () => {
+      setIsCheckingAuthPreflight(true);
+      try {
+        const preflight = await runAuthPreflight(selectedAiAgent as AuthProvider, { config });
+        if (cancelled) {
+          return;
+        }
+        setAuthPreflight(preflight);
+
+        const shouldStartSession = preflight.ok || selectedAiAgent === "codex";
+        if (!shouldStartSession) {
+          return;
+        }
+
+        const started = await startAuthSession(selectedAiAgent as AuthProvider, { config });
+        if (cancelled) {
+          return;
+        }
+        setAuthSession(started);
+        setHideIntegrationLoginSection(false);
+        if (started.session?.state === "authenticated") {
+          await runIntegrationContainerCheck();
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthPreflight(null);
+          setAuthSession(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsCheckingAuthPreflight(false);
+        }
+      }
+    };
+
+    const pollSession = async () => {
+      if (!authSession?.session?.id) {
+        return;
+      }
+      try {
+        const latest = await getAuthSessionStatus(authSession.session.id);
+        if (cancelled) {
+          return;
+        }
+        setAuthSession(latest);
+        if (latest.session?.state === "authenticated") {
+          await runIntegrationContainerCheck();
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthSession(null);
+        }
+      }
+    };
+
+    if (!authSession?.session?.id || authSession.session.provider !== selectedAiAgent) {
+      void runPreflightAndStart();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const interval = window.setInterval(() => {
+      void pollSession();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [authSession?.session?.id, authSession?.session?.provider, config, integrationLoginConfirmed, launchSucceeded, selectedAiAgent, stepIndex]);
+
+  useEffect(() => {
+    setHasSubmittedClaudeAuthCode(false);
+  }, [selectedAiAgent, authSession?.session?.id]);
 
   const checkSetupApiReachability = async (): Promise<boolean> => {
     setIsCheckingSetupApi(true);
     setSetupApiError("");
     try {
-      await apiGet<StatusResponse>("/api/status");
+      await Promise.all([
+        apiGet<StatusResponse>("/api/status"),
+        getAuthBrokerHealth()
+      ]);
       setSetupApiReachable(true);
       return true;
     } catch (error) {
@@ -225,7 +347,6 @@ function SetupWizardApp() {
     }
     return "device";
   }, [config.CLAUDE_BOOTSTRAP_LOGIN, config.CLAUDE_DEVICE_LOGIN_ON_START]);
-  const selectedAiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
   const integrationDisplayLabel = selectedAiAgent === "claude" ? "Claude Code" : "Codex";
   const isNgrokEnabled = config.NGROK_ENABLE === "true";
 
@@ -255,9 +376,6 @@ function SetupWizardApp() {
     return `https://${config.NGROK_DOMAIN.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
   }, [config.NGROK_DOMAIN, isNgrokEnabled]);
   const configuredWebhookUrl = configuredWebhookBaseUrl ? `${configuredWebhookBaseUrl}/webhooks/jira-transition` : "";
-
-  const launchSucceeded = Boolean(status?.docker.container.running);
-  const runStepIndex = STEPS.findIndex((step) => step.id === "run");
 
   useEffect(() => {
     if (launchSucceeded && hasLaunchedThisSession) {
@@ -347,6 +465,13 @@ function SetupWizardApp() {
         ANTHROPIC_API_KEY: ""
       }));
       setIntegrationCheck(null);
+      setIntegrationContainerCheck(null);
+      setAuthPreflight(null);
+      setAuthSession(null);
+      setAuthCodeSubmissionResult(null);
+      setAuthCodeInput("");
+      setObservedDeviceLogin(null);
+      setHideIntegrationLoginSection(false);
       setErrors((current) => {
         const next = { ...current };
         delete next.AI_AGENT;
@@ -367,6 +492,13 @@ function SetupWizardApp() {
       OPENAI_API_KEY: ""
     }));
     setIntegrationCheck(null);
+    setIntegrationContainerCheck(null);
+    setAuthPreflight(null);
+    setAuthSession(null);
+    setAuthCodeSubmissionResult(null);
+    setAuthCodeInput("");
+    setObservedDeviceLogin(null);
+    setHideIntegrationLoginSection(false);
     setErrors((current) => {
       const next = { ...current };
       delete next.AI_AGENT;
@@ -450,6 +582,7 @@ function SetupWizardApp() {
 
     setIsBusy(true);
     setActivity([]);
+    setHideIntegrationLoginSection(false);
 
     try {
       const saved = await saveConfig();
@@ -492,6 +625,11 @@ function SetupWizardApp() {
       setStatus(latestStatus);
       setHasLaunchedThisSession(false);
       setIsNavigationLocked(false);
+      setAuthPreflight(null);
+      setAuthSession(null);
+      setAuthCodeSubmissionResult(null);
+      setAuthCodeInput("");
+      setHideIntegrationLoginSection(false);
       setActivity((current) => [...current, "Container stopped"]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
@@ -723,15 +861,50 @@ function SetupWizardApp() {
     }
   };
 
-  const runCodexContainerCheck = async () => {
-    setIsCheckingCodexContainer(true);
+  const runIntegrationContainerCheck = async () => {
+    setIsCheckingIntegrationContainer(true);
+    setHideIntegrationLoginSection(false);
     try {
-      setCodexContainerCheck(await apiPost<ReadinessCheckResponse>("/api/checks/codex-container-auth", {}));
+      setIntegrationContainerCheck(await apiPost<ReadinessCheckResponse>("/api/checks/integration-container-auth", { config }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected error";
-      setCodexContainerCheck({ ok: false, checks: [{ command: "codex login", ok: false, output: message }] });
+      setIntegrationContainerCheck({
+        ok: false,
+        checks: [{ command: `${selectedAiAgent} login`, ok: false, output: message }]
+      });
     } finally {
-      setIsCheckingCodexContainer(false);
+      setIsCheckingIntegrationContainer(false);
+    }
+  };
+
+  const submitProviderAuthCode = async () => {
+    if (!authSession?.session?.id) {
+      return;
+    }
+
+    setIsSubmittingAuthCode(true);
+    try {
+      const result = await submitAuthCode(authSession.session.id, authCodeInput);
+      setAuthCodeSubmissionResult(result);
+      setAuthSession(result);
+      if (selectedAiAgent === "claude" && result.ok) {
+        setHasSubmittedClaudeAuthCode(true);
+      }
+
+      await refreshStatus().catch(() => undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      setAuthCodeSubmissionResult({
+        ok: false,
+        session: authSession.session,
+        error: {
+          code: "auth_code_submission_failed",
+          message,
+          remediation: "Retry the provider auth code submission from the wizard."
+        }
+      });
+    } finally {
+      setIsSubmittingAuthCode(false);
     }
   };
 
@@ -772,7 +945,7 @@ function SetupWizardApp() {
   };
 
   const handleStartSetupApi = async () => {
-    const command = "npm run dev:setup-api";
+    const command = "npm run dev:setup-api && npm run dev:auth-broker";
     try {
       setSetupApiActionLabel("Starting...");
       const response = await fetch("/__local/start-setup-api", { method: "POST" });
@@ -780,19 +953,19 @@ function SetupWizardApp() {
         throw new Error(`Request failed: ${response.status}`);
       }
 
-      setSetupApiActionLabel("Starting Setup API...");
+      setSetupApiActionLabel("Starting local services...");
       for (let attempt = 0; attempt < 12; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 700));
         const reachable = await checkSetupApiReachability();
         if (reachable) {
-          setSetupApiActionLabel("Setup API running");
-          window.setTimeout(() => setSetupApiActionLabel("Start Setup API"), 1800);
+          setSetupApiActionLabel("Local services running");
+          window.setTimeout(() => setSetupApiActionLabel("Start Local Services"), 1800);
           return;
         }
       }
 
       setSetupApiActionLabel("Could not start");
-      window.setTimeout(() => setSetupApiActionLabel("Start Setup API"), 1800);
+      window.setTimeout(() => setSetupApiActionLabel("Start Local Services"), 1800);
     } catch {
       try {
         await navigator.clipboard.writeText(command);
@@ -800,7 +973,7 @@ function SetupWizardApp() {
       } catch {
         setSetupApiActionLabel(command);
       }
-      window.setTimeout(() => setSetupApiActionLabel("Start Setup API"), 2200);
+      window.setTimeout(() => setSetupApiActionLabel("Start Local Services"), 2200);
     }
   };
 
@@ -868,7 +1041,7 @@ function SetupWizardApp() {
     }
     if (selectedAiAgent === "claude") {
       if (output.includes("provide anthropic_api_key when ai_agent is set to claude")) {
-        return "This response came from an outdated Setup API process. Restart setup-api so Claude device-login checks are used.";
+        return "This response came from an outdated local services process. Restart setup-api and auth-broker so Claude device-login checks are used.";
       }
       if (output.includes("enable claude_device_login_on_start")) {
         return "Enable Claude device login on start, or select persisted login if a Claude session already exists in the shared volume.";
@@ -1066,19 +1239,52 @@ function SetupWizardApp() {
     ? stepTestPassed[currentStep.id as keyof typeof stepTestPassed]
     : true;
   const createdPullRequests = observedPullRequests;
-  const codexDeviceLogin = observedCodexDeviceLogin;
+  const brokerManagedDeviceLogin = authSession?.session?.browserUrl
+    ? {
+        url: authSession.session.browserUrl,
+        code: authSession.session.code,
+        expiryText: authSession.session.state === "waiting_for_browser" ? "This sign-in page expires shortly." : ""
+      }
+    : null;
+  const deviceLogin = selectedAiAgent === "claude" && authSession
+    ? brokerManagedDeviceLogin
+    : (brokerManagedDeviceLogin || observedDeviceLogin);
+  const authSessionStatusMessage = authSession?.error?.message
+    || authSession?.session?.error?.message
+    || authPreflight?.checks?.find((check) => check.severity !== "pass")?.summary
+    || (authBrokerHealth ? "" : "Auth broker is not reachable yet. Start the local auth broker service before trying provider login.")
+    || "";
+  const showDeviceLoginPanel = Boolean(deviceLogin) || launchSucceeded;
+  const showIntegrationLoginPanel = showDeviceLoginPanel && !hideIntegrationLoginSection;
+  const launchIntegrationLabel = selectedAiAgent === "claude" ? "Claude Code" : "Codex";
+  const claudeCodeSubmissionRequired = selectedAiAgent === "claude"
+    && Boolean(authSession?.session?.requiresCode);
+  const shouldShowClaudeLoginPending = selectedAiAgent === "claude"
+    && (hasSubmittedClaudeAuthCode || !claudeCodeSubmissionRequired);
+  const claudeLoginPendingLabel = shouldShowClaudeLoginPending
+    ? (isCheckingIntegrationContainer
+      ? "Claude Code login is being confirmed..."
+      : "Claude Code is logging in...")
+    : "";
 
-  const copyCodexCode = async () => {
-    if (!codexDeviceLogin?.code) {
+  const copyDeviceCode = async () => {
+    if (!deviceLogin?.code) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(codexDeviceLogin.code);
-      setCopiedCodexCode(true);
-      window.setTimeout(() => setCopiedCodexCode(false), 2500);
+      await navigator.clipboard.writeText(deviceLogin.code);
+      setCopiedDeviceCode(true);
+      window.setTimeout(() => setCopiedDeviceCode(false), 2500);
     } catch {
-      setCopiedCodexCode(false);
+      setCopiedDeviceCode(false);
+    }
+  };
+
+  const handleOpenSignInPage = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!deviceLogin?.url) {
+      event.preventDefault();
+      return;
     }
   };
 
@@ -1328,7 +1534,8 @@ function SetupWizardApp() {
                     <p>PRonto cannot run Docker checks until the local Setup API is reachable.</p>
                     {setupApiError ? <p className="muted"><code>{setupApiError}</code></p> : null}
                     <ol className="plain-list ordered">
-                      <li>Start Setup API: <code>npm run dev:setup-api</code></li>
+                      <li>Start setup-api: <code>npm run dev:setup-api</code></li>
+                      <li>Start auth-broker: <code>npm run dev:auth-broker</code></li>
                       <li>
                         Open and verify:{" "}
                         <a href={`${apiBase}/api/status`} target="_blank" rel="noreferrer">
@@ -1801,6 +2008,11 @@ function SetupWizardApp() {
                           </a>
                         </li>
                         <li>
+                          <a href="https://dashboard.ngrok.com/api-keys" target="_blank" rel="noreferrer">
+                            Create or manage ngrok API keys
+                          </a>
+                        </li>
+                        <li>
                           <a href="https://ngrok.com/docs/universal-gateway/domains/" target="_blank" rel="noreferrer">
                             Reserved domains and static URLs
                           </a>
@@ -2021,13 +2233,13 @@ function SetupWizardApp() {
                   Generate the environment config, build the image, replace the running container if needed, and check service health from one launch sequence.
                 </p>
                 <div className="action-row">
-                  <button className={`primary hero-primary launch-button ${launchSucceeded ? "is-pass" : ""}`} onClick={() => void runSetup()} disabled={isBusy || !launchReadyForReview}>
+                  <button className={`primary hero-primary launch-button ${launchSucceeded ? "is-pass" : ""}`} onClick={() => void runSetup()} disabled={isBusy || !launchReadyForReview || launchSucceeded}>
                     {isBusy ? "Launching..." : "Launch PRonto"}
                   </button>
                   <button
-                    className="secondary hero-secondary"
+                    className="primary hero-danger stop-button"
                     onClick={() => void stopSetup()}
-                    disabled={isBusy}
+                    disabled={isBusy || !launchSucceeded}
                   >
                     Stop Service
                   </button>
@@ -2055,39 +2267,114 @@ function SetupWizardApp() {
                     )}
                   </ul>
                 </div>
-                {codexDeviceLogin ? (
+                {showIntegrationLoginPanel ? (
                   <div className="activity-card launch-activity">
-                    <h4>Connect Codex</h4>
-                    <p className="muted">Complete the device login in your browser, then return here and wait for PRonto to continue.</p>
-                    <ol className="plain-list ordered">
-                      <li>Open the OpenAI sign-in page.</li>
-                      <li>Enter the one-time code shown below.</li>
-                      <li>Return to this screen after signing in.</li>
-                    </ol>
-                    <div className="action-row">
-                      <a className="secondary button-link" href={codexDeviceLogin.url} target="_blank" rel="noreferrer">
-                        Open Sign-In Page
-                      </a>
-                      <button className="secondary" onClick={() => void copyCodexCode()}>
-                        {copiedCodexCode ? "Code Copied" : "Copy Code"}
-                      </button>
+                    <div className="activity-card-header">
+                      <h4>Connect {launchIntegrationLabel}</h4>
+                      {integrationLoginConfirmed ? (
+                        <button
+                          className="activity-card-close"
+                          onClick={() => setHideIntegrationLoginSection(true)}
+                          aria-label={`Dismiss ${launchIntegrationLabel} login section`}
+                          type="button"
+                        >
+                          ×
+                        </button>
+                      ) : null}
                     </div>
-                    <div className="guide-section">
-                      <h4>One-time code</h4>
-                      <p><code>{codexDeviceLogin.code}</code></p>
-                      <p className="muted">{codexDeviceLogin.expiryText || "This code expires shortly."}</p>
-                      <p className="muted">Only enter this code on the OpenAI sign-in page.</p>
-                    </div>
-                    <ConnectionTestPanel
-                      buttonClassName={`primary github-check-button ${codexContainerCheck ? (codexContainerCheck.ok ? "is-pass" : "is-fail") : ""}`}
-                      buttonLabel={isCheckingCodexContainer ? "Testing Codex login..." : "Test Codex Login"}
-                      onClick={() => void runCodexContainerCheck()}
-                      disabled={isCheckingCodexContainer || !launchSucceeded}
-                      readyLabel="✓ Codex login confirmed"
-                      resultTitle="Codex container login result"
-                      result={codexContainerCheck}
-                      errorHelp="This test confirms the running PRonto container can use the Codex CLI session you just completed."
-                    />
+                    {!integrationLoginConfirmed ? (
+                      <>
+                        <p className="muted">
+                          {!deviceLogin
+                            ? isCheckingAuthPreflight
+                              ? `Running ${launchIntegrationLabel} auth preflight checks now. This panel will update as soon as the sign-in session is ready.`
+                              : `Preparing the ${launchIntegrationLabel} sign-in session now. This panel will update as soon as the browser sign-in page is ready.`
+                            : <>Click <strong>Open Sign-In Page</strong> to continue the device login in your browser, then return here and wait for PRonto to continue.</>}
+                        </p>
+                        <ol className="plain-list ordered">
+                          <li>{!deviceLogin ? `Wait for PRonto to prepare the ${launchIntegrationLabel} sign-in page.` : <>Click <strong>Open Sign-In Page</strong>.</>}</li>
+                          {deviceLogin?.code ? <li>Enter the one-time code shown below.</li> : <li>Follow the sign-in flow shown in your browser.</li>}
+                          <li>Return to this screen after signing in.</li>
+                        </ol>
+                        <div className="action-row">
+                          <a className={`secondary button-link ${deviceLogin ? "" : "is-disabled"}`} href={deviceLogin?.url || "#"} target="_blank" rel="noreferrer" onClick={handleOpenSignInPage}>
+                            Open Sign-In Page
+                          </a>
+                          {deviceLogin?.code ? (
+                            <button className="secondary" onClick={() => void copyDeviceCode()}>
+                              {copiedDeviceCode ? "Code Copied" : "Copy Code"}
+                            </button>
+                          ) : null}
+                        </div>
+                      </>
+                    ) : null}
+                    {selectedAiAgent === "claude" && claudeCodeSubmissionRequired && !integrationLoginConfirmed ? (
+                      <div className="guide-section">
+                        <h4>Paste code from Claude Code</h4>
+                        <p className="muted">
+                          After authorizing in your browser, copy the code Claude Code gives you and paste it below so PRonto can finish the login in the same local auth session.
+                        </p>
+                        <Field
+                          label="Claude Code authorization code"
+                          value={authCodeInput}
+                          onChange={setAuthCodeInput}
+                          placeholder="Paste the code from Claude Code"
+                        />
+                        <div className="action-row launch-auth-actions">
+                          <button
+                            className="secondary"
+                            type="button"
+                            onClick={() => void submitProviderAuthCode()}
+                            disabled={isSubmittingAuthCode || isVerifyingAuthSession || !authCodeInput.trim() || !authSession?.session?.id}
+                          >
+                            {isSubmittingAuthCode ? "Submitting Code..." : isVerifyingAuthSession ? "Verifying Login..." : "Submit Code"}
+                          </button>
+                        </div>
+                        {authCodeSubmissionResult ? (
+                          <div className="activity-card">
+                            <h4>{launchIntegrationLabel} submission result</h4>
+                            <p className={authCodeSubmissionResult.ok ? "status-ok" : "status-error"}>
+                              {authCodeSubmissionResult.session?.error?.message || authCodeSubmissionResult.error?.message || (authCodeSubmissionResult.ok ? `${launchIntegrationLabel} login step completed.` : `${launchIntegrationLabel} login step failed.`)}
+                            </p>
+                            {authCodeSubmissionResult.session?.error?.remediation || authCodeSubmissionResult.error?.remediation ? (
+                              <p className="muted">{authCodeSubmissionResult.session?.error?.remediation || authCodeSubmissionResult.error?.remediation}</p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {deviceLogin?.code && !integrationLoginConfirmed ? (
+                      <div className="guide-section">
+                        <h4>One-time code</h4>
+                        <p><code>{deviceLogin.code}</code></p>
+                        <p className="muted">{deviceLogin.expiryText || "This code expires shortly."}</p>
+                        <p className="muted">Only enter this code on the sign-in page opened from PRonto.</p>
+                      </div>
+                    ) : null}
+                    {selectedAiAgent === "claude" ? (
+                      <ConnectionTestPanel
+                        hideButton
+                        pendingLabel={claudeLoginPendingLabel}
+                        readyLabel={`✓ ${launchIntegrationLabel} login confirmed`}
+                        resultTitle={`${launchIntegrationLabel} container login result`}
+                        result={integrationContainerCheck}
+                      />
+                    ) : (
+                      <ConnectionTestPanel
+                        buttonClassName={`primary github-check-button ${integrationContainerCheck ? (integrationContainerCheck.ok ? "is-pass" : "is-fail") : ""}`}
+                        buttonLabel={isCheckingIntegrationContainer ? `Testing ${launchIntegrationLabel} login...` : `Test ${launchIntegrationLabel} Login`}
+                        onClick={() => void runIntegrationContainerCheck()}
+                        disabled={isCheckingIntegrationContainer || !launchSucceeded}
+                        readyLabel={`✓ ${launchIntegrationLabel} login confirmed`}
+                        resultTitle={`${launchIntegrationLabel} container login result`}
+                        result={integrationContainerCheck}
+                      />
+                    )}
+                    {selectedAiAgent === "claude" && claudeCodeSubmissionRequired && !hasSubmittedClaudeAuthCode ? (
+                      <p className="muted">
+                        Complete the browser sign-in, then submit the Claude Code authorization code.
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
                 {!hideJiraWebhookSection ? (
@@ -2127,6 +2414,22 @@ function SetupWizardApp() {
                   <h3>Console output</h3>
                 </div>
                 <pre ref={consoleOutputRef} onScroll={handleConsoleScroll}>{status?.logs || "No logs yet."}</pre>
+                {!deviceLogin && authSessionStatusMessage ? (
+                  <div className="guide-section guide-error-help">
+                    <h4>{launchIntegrationLabel} sign-in status</h4>
+                    <p className="muted">{authSessionStatusMessage}</p>
+                    {authPreflight?.checks?.length ? (
+                      <ul className="plain-list">
+                        {authPreflight.checks.filter((check) => check.severity !== "pass").map((check) => (
+                          <li key={`${check.name}-${check.code}`}>
+                            {check.summary}
+                            {check.remediation ? ` ${check.remediation}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           )}
@@ -2172,20 +2475,40 @@ function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, "");
 }
 
-function extractCodexDeviceLogin(text: string) {
+function extractDeviceLogin(text: string, agent: "codex" | "claude") {
   const cleaned = stripAnsi(text || "");
-  const urlMatch = cleaned.match(/https:\/\/auth\.openai\.com\/codex\/device/i);
-  const codeMatch = cleaned.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/);
-  const expiryMatch = cleaned.match(/expires in\s+([^) \n]+)/i);
+  if (agent === "codex") {
+    const urlMatch = cleaned.match(/https:\/\/auth\.openai\.com\/codex\/device/i);
+    const codeMatch = cleaned.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/);
+    const expiryMatch = cleaned.match(/expires in\s+([^) \n]+)/i);
 
-  if (!urlMatch || !codeMatch) {
+    if (!urlMatch || !codeMatch) {
+      return null;
+    }
+
+    return {
+      url: urlMatch[0],
+      code: codeMatch[0],
+      expiryText: expiryMatch ? `Code expires in ${expiryMatch[1]}.` : ""
+    };
+  }
+
+  const marker = "Starting interactive Claude Code device auth...";
+  const markerIndex = cleaned.lastIndexOf(marker);
+  const searchArea = markerIndex >= 0 ? cleaned.slice(markerIndex) : cleaned;
+  const urlMatch = searchArea.match(/https:\/\/[^\s)]+/i);
+  const codeMatch =
+    searchArea.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,}\b/) ||
+    searchArea.match(/\b[A-Z0-9]{6,}\b/);
+
+  if (!urlMatch) {
     return null;
   }
 
   return {
     url: urlMatch[0],
-    code: codeMatch[0],
-    expiryText: expiryMatch ? `Code expires in ${expiryMatch[1]}.` : ""
+    code: codeMatch?.[0] || "",
+    expiryText: ""
   };
 }
 

@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 
 import { createDockerService } from "../src/services/docker-service.js";
 
+const CLAUDE_STATUS_COMMAND = "status_command='claude auth status'; if claude auth status >/tmp/pronto-claude-auth 2>&1; then status_rc=0; elif claude login status >/tmp/pronto-claude-auth 2>&1; then status_command='claude login status'; status_rc=0; elif claude whoami >/tmp/pronto-claude-auth 2>&1; then status_command='claude whoami'; status_rc=0; else status_rc=$?; fi; printf '__PRONTO_CLAUDE_STATUS_COMMAND__:%s\\n' \"$status_command\"; printf '__PRONTO_CLAUDE_STATUS_RC__:%s\\n' \"$status_rc\"; cat /tmp/pronto-claude-auth; exit 0";
+
 function createExecFileMock(handler) {
   const mock = (file, args, options, callback) => {
     Promise.resolve(handler(file, args, options))
@@ -246,7 +248,31 @@ test("getCodexContainerAuthStatus verifies codex inside the running container", 
     })
   });
 
-  const result = await service.getCodexContainerAuthStatus();
+  const result = await service.getAiContainerAuthStatus({ AI_AGENT: "codex" });
+  assert.equal(result.ok, true);
+  assert.equal(result.checks[1].ok, true);
+  assert.equal(seen.filter((call) => call.args[0] === "exec").length, 2);
+});
+
+test("getAiContainerAuthStatus verifies claude inside the running container", async () => {
+  const seen = [];
+  const service = createDockerService({
+    execFileImpl: createExecFileMock((file, args) => {
+      seen.push({ file, args });
+      if (file === "docker" && args[0] === "ps") {
+        return { stdout: "Up 3 minutes" };
+      }
+      if (file === "docker" && args[0] === "exec" && args[4] === "claude --version") {
+        return { stdout: "claude 0.9.0" };
+      }
+      if (file === "docker" && args[0] === "exec" && args[4].includes("claude auth status")) {
+        return { stdout: "__PRONTO_CLAUDE_STATUS_COMMAND__:claude auth status\n__PRONTO_CLAUDE_STATUS_RC__:0\nLogged in as demo@example.com" };
+      }
+      throw new Error("unexpected");
+    })
+  });
+
+  const result = await service.getAiContainerAuthStatus({ AI_AGENT: "claude" });
   assert.equal(result.ok, true);
   assert.equal(result.checks[1].ok, true);
   assert.equal(seen.filter((call) => call.args[0] === "exec").length, 2);

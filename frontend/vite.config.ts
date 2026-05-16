@@ -41,21 +41,39 @@ function setupApiLauncherPlugin(): Plugin {
         };
 
         void (async () => {
-          const alreadyRunning = await isPortReachable(3010);
-          if (alreadyRunning) {
-            send(200, { ok: true, started: false, status: "already-running" });
-            return;
+          const workspaceRoot = path.resolve(server.config.root, "..");
+          const [setupApiRunning, authBrokerRunning] = await Promise.all([
+            isPortReachable(3010),
+            isPortReachable(3020)
+          ]);
+
+          if (!setupApiRunning) {
+            const setupApiChild = spawn("npm", ["run", "dev:setup-api"], {
+              cwd: workspaceRoot,
+              detached: true,
+              stdio: "ignore"
+            });
+            setupApiChild.unref();
           }
 
-          const workspaceRoot = path.resolve(server.config.root, "..");
-          const child = spawn("npm", ["run", "dev:setup-api"], {
-            cwd: workspaceRoot,
-            detached: true,
-            stdio: "ignore"
-          });
-          child.unref();
+          if (!authBrokerRunning) {
+            const authBrokerChild = spawn("npm", ["run", "dev:auth-broker"], {
+              cwd: workspaceRoot,
+              detached: true,
+              stdio: "ignore"
+            });
+            authBrokerChild.unref();
+          }
 
-          send(200, { ok: true, started: true, status: "starting" });
+          send(200, {
+            ok: true,
+            started: !setupApiRunning || !authBrokerRunning,
+            status: setupApiRunning && authBrokerRunning ? "already-running" : "starting",
+            services: {
+              setupApi: setupApiRunning ? "already-running" : "starting",
+              authBroker: authBrokerRunning ? "already-running" : "starting"
+            }
+          });
         })().catch((error) => {
           send(500, { ok: false, error: error instanceof Error ? error.message : "Failed to start setup-api" });
         });

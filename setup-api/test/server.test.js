@@ -153,13 +153,17 @@ test("POST /api/checks/codex-readiness forwards form config to service", async (
 
 test("POST /api/checks/codex-container-auth calls the docker service", async () => {
   let called = false;
+  let seenConfig;
+  const config = { AI_AGENT: "claude" };
   const response = await invokeRoute({
     method: "POST",
     url: "/api/checks/codex-container-auth",
-    headers: { host: "localhost" },
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ config }),
     deps: {
-      getCodexContainerAuthStatusImpl: async () => {
+      getAiContainerAuthStatusImpl: async (value) => {
         called = true;
+        seenConfig = value;
         return { ok: true, checks: [] };
       }
     }
@@ -167,6 +171,162 @@ test("POST /api/checks/codex-container-auth calls the docker service", async () 
 
   assert.equal(response.statusCode, 200);
   assert.equal(called, true);
+  assert.deepEqual(seenConfig, config);
+});
+
+test("GET /api/auth/health proxies auth broker health", async () => {
+  const response = await invokeRoute({
+    method: "GET",
+    url: "/api/auth/health",
+    deps: {
+      getAuthBrokerHealthImpl: async () => ({ ok: true, service: "auth-broker" }),
+      getAuthBrokerTransportInfoImpl: () => ({ transport: "launcher_http", baseUrl: "http://127.0.0.1:3020", targetLabel: "launcher-managed auth broker" })
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), {
+    ok: true,
+    service: "auth-broker",
+    transportInfo: {
+      transport: "launcher_http",
+      baseUrl: "http://127.0.0.1:3020",
+      targetLabel: "launcher-managed auth broker"
+    }
+  });
+});
+
+test("POST /api/auth/preflight forwards provider and context", async () => {
+  let seenProvider;
+  let seenContext;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/auth/preflight",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ provider: "claude", context: { AI_AGENT: "claude" } }),
+    deps: {
+      runAuthBrokerPreflightImpl: async (provider, context) => {
+        seenProvider = provider;
+        seenContext = context;
+        return { ok: true, provider, checks: [], state: "preflight" };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenProvider, "claude");
+  assert.deepEqual(seenContext, { AI_AGENT: "claude" });
+});
+
+test("POST /api/auth/sessions/start forwards provider and context", async () => {
+  let seenProvider;
+  let seenContext;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/auth/sessions/start",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ provider: "codex", context: { AI_AGENT: "codex" } }),
+    deps: {
+      startAuthBrokerSessionImpl: async (provider, context) => {
+        seenProvider = provider;
+        seenContext = context;
+        return { ok: true, session: { id: "session-1", provider, state: "starting" } };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenProvider, "codex");
+  assert.deepEqual(seenContext, { AI_AGENT: "codex" });
+});
+
+test("GET /api/auth/sessions/:id forwards session status lookup", async () => {
+  let seenSessionId;
+  const response = await invokeRoute({
+    method: "GET",
+    url: "/api/auth/sessions/session-1",
+    headers: { host: "localhost" },
+    deps: {
+      getAuthBrokerSessionStatusImpl: async (sessionId) => {
+        seenSessionId = sessionId;
+        return { ok: true, session: { id: sessionId, provider: "claude", state: "waiting_for_code" } };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenSessionId, "session-1");
+});
+
+test("POST /api/auth/sessions/:id/code forwards auth code submission", async () => {
+  let seenSessionId;
+  let seenCode;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/auth/sessions/session-1/code",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ code: "ABCD-1234" }),
+    deps: {
+      submitAuthBrokerCodeImpl: async (sessionId, code) => {
+        seenSessionId = sessionId;
+        seenCode = code;
+        return { ok: true, session: { id: sessionId, provider: "claude", state: "verifying" } };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenSessionId, "session-1");
+  assert.equal(seenCode, "ABCD-1234");
+});
+
+test("POST /api/auth/sessions/:id/verify forwards verify call", async () => {
+  let seenSessionId;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/auth/sessions/session-1/verify",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({}),
+    deps: {
+      verifyAuthBrokerSessionImpl: async (sessionId) => {
+        seenSessionId = sessionId;
+        return { ok: true, session: { id: sessionId, provider: "codex", state: "authenticated" } };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenSessionId, "session-1");
+});
+
+test("POST /api/auth/sessions/:id/cancel forwards cancel call", async () => {
+  let seenSessionId;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/auth/sessions/session-1/cancel",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({}),
+    deps: {
+      cancelAuthBrokerSessionImpl: async (sessionId) => {
+        seenSessionId = sessionId;
+        return { ok: true, session: { id: sessionId, provider: "codex", state: "cancelled" } };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenSessionId, "session-1");
+});
+
+test("legacy Claude device auth compatibility routes are removed", async () => {
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/checks/claude-device-login/start",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({})
+  });
+
+  assert.equal(response.statusCode, 404);
 });
 
 test("POST /api/checks/ngrok-readiness forwards form config to service", async () => {

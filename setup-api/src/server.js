@@ -5,8 +5,9 @@ import { pathToFileURL } from "node:url";
 
 import { validateConfig } from "./config.js";
 import { frontendDistPath } from "./paths.js";
-import { buildImage, getCodexContainerAuthStatus, getContainerLogs, listDockerContexts, openDockerDesktop, resetDockerBuilderCache, runContainer, runDockerNetworkCheck, startColima, stopContainer, switchDockerContext } from "./services/docker-service.js";
+import { buildImage, getAiContainerAuthStatus, getContainerLogs, listDockerContexts, openDockerDesktop, resetDockerBuilderCache, runContainer, runDockerNetworkCheck, startColima, stopContainer, switchDockerContext } from "./services/docker-service.js";
 import { readCurrentConfig, saveConfig } from "./services/env-file.js";
+import { cancelAuthBrokerSession, getAuthBrokerHealth, getAuthBrokerSessionStatus, getAuthBrokerTransportInfo, runAuthBrokerLogin, runAuthBrokerPreflight, startAuthBrokerSession, submitAuthBrokerCode, verifyAuthBrokerSession } from "./services/auth-broker-client.js";
 import { getCodexReadinessStatus, getDockerReadinessStatus, getFullStatus, getGitHubReadinessStatus, getHealthStatus, getJiraReadinessStatus, getJiraWebhookDeliveryStatus, getNgrokReadinessStatus, getPrerequisiteChecks } from "./services/status-service.js";
 
 const PORT = Number(process.env.SETUP_API_PORT || 3010);
@@ -78,7 +79,16 @@ export function createRequestListener(deps = {}) {
     buildImageImpl = buildImage,
     runDockerNetworkCheckImpl = runDockerNetworkCheck,
     resetDockerBuilderCacheImpl = resetDockerBuilderCache,
-    getCodexContainerAuthStatusImpl = getCodexContainerAuthStatus,
+    getAiContainerAuthStatusImpl = getAiContainerAuthStatus,
+    getAuthBrokerHealthImpl = getAuthBrokerHealth,
+    getAuthBrokerTransportInfoImpl = getAuthBrokerTransportInfo,
+    runAuthBrokerPreflightImpl = runAuthBrokerPreflight,
+    startAuthBrokerSessionImpl = startAuthBrokerSession,
+    getAuthBrokerSessionStatusImpl = getAuthBrokerSessionStatus,
+    submitAuthBrokerCodeImpl = submitAuthBrokerCode,
+    runAuthBrokerLoginImpl = runAuthBrokerLogin,
+    verifyAuthBrokerSessionImpl = verifyAuthBrokerSession,
+    cancelAuthBrokerSessionImpl = cancelAuthBrokerSession,
     startColimaImpl = startColima,
     openDockerDesktopImpl = openDockerDesktop,
     listDockerContextsImpl = listDockerContexts,
@@ -158,7 +168,65 @@ export function createRequestListener(deps = {}) {
       }
 
       if (request.method === "POST" && url.pathname === "/api/checks/codex-container-auth") {
-        sendJson(response, 200, await getCodexContainerAuthStatusImpl());
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await getAiContainerAuthStatusImpl(body.config || body));
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/checks/integration-container-auth") {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await getAiContainerAuthStatusImpl(body.config || body));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/auth/health") {
+        sendJson(response, 200, {
+          ...(await getAuthBrokerHealthImpl()),
+          transportInfo: getAuthBrokerTransportInfoImpl()
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/auth/preflight") {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await runAuthBrokerPreflightImpl(body.provider, body.context || {}));
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/auth/sessions/start") {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await startAuthBrokerSessionImpl(body.provider, body.context || {}));
+        return;
+      }
+
+      const authSessionMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)$/);
+      if (request.method === "GET" && authSessionMatch) {
+        sendJson(response, 200, await getAuthBrokerSessionStatusImpl(authSessionMatch[1]));
+        return;
+      }
+
+      const authSubmitMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/code$/);
+      if (request.method === "POST" && authSubmitMatch) {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await submitAuthBrokerCodeImpl(authSubmitMatch[1], body.code));
+        return;
+      }
+
+      const authLoginMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/login$/);
+      if (request.method === "POST" && authLoginMatch) {
+        sendJson(response, 200, await runAuthBrokerLoginImpl(authLoginMatch[1]));
+        return;
+      }
+
+      const authVerifyMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/verify$/);
+      if (request.method === "POST" && authVerifyMatch) {
+        sendJson(response, 200, await verifyAuthBrokerSessionImpl(authVerifyMatch[1]));
+        return;
+      }
+
+      const authCancelMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && authCancelMatch) {
+        sendJson(response, 200, await cancelAuthBrokerSessionImpl(authCancelMatch[1]));
         return;
       }
 

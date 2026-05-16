@@ -98,14 +98,11 @@ if [[ "${AI_AGENT:-codex}" == "claude" ]]; then
     if claude_is_logged_in; then
       echo "Claude Code login already available."
     elif [[ "${CLAUDE_DEVICE_LOGIN_ON_START:-false}" == "true" ]]; then
-      echo "Starting interactive Claude Code device auth..."
-      if ! claude_start_device_login; then
-        echo "Claude Code login failed. Complete login manually in the container, or set CLAUDE_BOOTSTRAP_LOGIN=false to use persisted login only." >&2
-        exit 1
-      fi
+      echo "Claude Code login is required, but interactive startup login is disabled."
+      echo "Complete Claude Code device login from the setup UI after PRonto starts."
     else
-      echo "Claude Code is not logged in. Set CLAUDE_DEVICE_LOGIN_ON_START=true or set CLAUDE_BOOTSTRAP_LOGIN=false for persisted login mode." >&2
-      exit 1
+      echo "Claude Code bootstrap login is enabled, but no persisted login is available yet."
+      echo "Start PRonto, then complete Claude Code login from the setup UI." >&2
     fi
   else
     echo "Claude Code bootstrap login disabled; expecting persisted session."

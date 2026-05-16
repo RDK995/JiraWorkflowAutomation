@@ -1,12 +1,63 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { normalizeConfig } from "../config.js";
 import { envFilePath, projectRoot } from "../paths.js";
 
 const IMAGE_NAME = "jira-workflow-automation";
 const CONTAINER_NAME = "jira-automation";
 const CODEX_VOLUME = "codex-state:/data/codex";
 const CLAUDE_VOLUME = "claude-state:/data/claude";
+const CLAUDE_AUTH_STATUS_COMMAND = "status_command='claude auth status'; if claude auth status >/tmp/pronto-claude-auth 2>&1; then status_rc=0; elif claude login status >/tmp/pronto-claude-auth 2>&1; then status_command='claude login status'; status_rc=0; elif claude whoami >/tmp/pronto-claude-auth 2>&1; then status_command='claude whoami'; status_rc=0; else status_rc=$?; fi; printf '__PRONTO_CLAUDE_STATUS_COMMAND__:%s\\n' \"$status_command\"; printf '__PRONTO_CLAUDE_STATUS_RC__:%s\\n' \"$status_rc\"; cat /tmp/pronto-claude-auth; exit 0";
+
+function stripAnsi(text = "") {
+  return String(text).replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function parseClaudeAuthStatusOutput(text = "") {
+  const cleaned = stripAnsi(text);
+  const commandMatch = cleaned.match(/__PRONTO_CLAUDE_STATUS_COMMAND__:(.+)/);
+  const rcMatch = cleaned.match(/__PRONTO_CLAUDE_STATUS_RC__:(\d+)/);
+  const body = cleaned
+    .replace(/__PRONTO_CLAUDE_STATUS_COMMAND__:.+\n?/, "")
+    .replace(/__PRONTO_CLAUDE_STATUS_RC__:\d+\n?/, "")
+    .trim();
+
+  let loggedIn = false;
+  const rc = Number.parseInt(rcMatch?.[1] || "1", 10);
+
+  if (body.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.loggedIn === "boolean") {
+        loggedIn = parsed.loggedIn;
+      }
+    } catch {
+      loggedIn = false;
+    }
+  }
+
+  if (!loggedIn) {
+    const lowered = body.toLowerCase();
+    if (
+      rc === 0 &&
+      lowered &&
+      !lowered.includes("not logged in") &&
+      !lowered.includes("please run /login") &&
+      !lowered.includes("\"loggedin\": false") &&
+      !lowered.includes("\"authmethod\": \"none\"")
+    ) {
+      loggedIn = true;
+    }
+  }
+
+  return {
+    loggedIn,
+    command: commandMatch?.[1]?.trim() || "claude auth status",
+    rc,
+    output: body
+  };
+}
 
 export function createDockerService({
   execFileImpl = execFile,
@@ -15,11 +66,13 @@ export function createDockerService({
   platform = process.platform
 } = {}) {
   const execFileAsync = promisify(execFileImpl);
+  let dockerBinaryPath = null;
 
-  async function runDocker(args) {
+  async function runDocker(args, { timeoutMs } = {}) {
     return execFileAsync("docker", args, {
       cwd: rootPath,
-      maxBuffer: 1024 * 1024 * 10
+      maxBuffer: 1024 * 1024 * 10,
+      timeout: timeoutMs
     });
   }
 
@@ -48,6 +101,62 @@ export function createDockerService({
         ok: false,
         stdout: "",
         stderr: (error.stderr || error.message || "").trim()
+      };
+    }
+  }
+
+  async function getDockerBinaryPath() {
+    if (dockerBinaryPath) {
+      return dockerBinaryPath;
+    }
+
+    const whichDocker = await maybeRunCommand("which", ["docker"]);
+    if (whichDocker.ok && whichDocker.stdout) {
+      dockerBinaryPath = whichDocker.stdout.split(/\r?\n/)[0].trim();
+      return dockerBinaryPath;
+    }
+
+    if (platform === "darwin") {
+      dockerBinaryPath = "/Applications/Docker.app/Contents/Resources/bin/docker";
+      return dockerBinaryPath;
+    }
+
+    dockerBinaryPath = "docker";
+    return dockerBinaryPath;
+  }
+
+  async function getClaudeAuthStatusCheck() {
+    try {
+      const { stdout, stderr } = await runDocker([
+        "exec",
+        CONTAINER_NAME,
+        "sh",
+        "-lc",
+        CLAUDE_AUTH_STATUS_COMMAND
+      ], { timeoutMs: 4000 });
+
+      const parsed = parseClaudeAuthStatusOutput([stdout, stderr].filter(Boolean).join("\n"));
+
+      return {
+        ok: parsed.loggedIn,
+        check: {
+          command: "claude login",
+          ok: parsed.loggedIn,
+          output: parsed.loggedIn
+            ? parsed.output || "Claude Code login is active in the container."
+            : parsed.output || `Claude Code is not logged in yet (${parsed.command} exited ${parsed.rc}).`
+        }
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        check: {
+          command: "claude login",
+          ok: false,
+          output: error.killed
+            ? "Claude Code login status timed out after 4s. The Claude CLI appears to be blocked inside the container."
+            : error.stderr?.trim() || error.message || "Claude Code is not logged in yet."
+        }
       };
     }
   }
@@ -660,7 +769,10 @@ export function createDockerService({
       }
     },
 
-    async getCodexContainerAuthStatus() {
+    async getAiContainerAuthStatus(configInput = {}) {
+      const config = normalizeConfig(configInput);
+      const aiAgent = config.AI_AGENT === "claude" ? "claude" : "codex";
+      const integrationLabel = aiAgent === "claude" ? "Claude Code" : "Codex";
       const container = await this.getContainerStatus();
       if (!container.exists || !container.running) {
         return {
@@ -669,7 +781,7 @@ export function createDockerService({
             {
               command: "pronto container",
               ok: false,
-              output: "PRonto is not running yet. Launch the service before testing Codex login."
+              output: `PRonto is not running yet. Launch the service before testing ${integrationLabel} login.`
             }
           ]
         };
@@ -677,35 +789,58 @@ export function createDockerService({
 
       const checks = [];
 
-      try {
-        const { stdout } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "codex --version"]);
-        checks.push({
-          command: "codex cli",
-          ok: true,
-          output: stdout.trim() || "Codex CLI is installed."
-        });
-      } catch (error) {
-        checks.push({
-          command: "codex cli",
-          ok: false,
-          output: error.stderr?.trim() || error.message
-        });
-        return { ok: false, checks };
-      }
+      if (aiAgent === "claude") {
+        try {
+          const { stdout } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "claude --version"], { timeoutMs: 4000 });
+          checks.push({
+            command: "claude cli",
+            ok: true,
+            output: stdout.trim() || "Claude Code CLI is installed."
+          });
+        } catch (error) {
+          checks.push({
+            command: "claude cli",
+            ok: false,
+            output: error.stderr?.trim() || error.message
+          });
+          return { ok: false, checks };
+        }
 
-      try {
-        const { stdout, stderr } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "codex login status"]);
-        checks.push({
-          command: "codex login",
-          ok: true,
-          output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Codex login is active in the container."
-        });
-      } catch (error) {
-        checks.push({
-          command: "codex login",
-          ok: false,
-          output: error.stderr?.trim() || error.message || "Codex is not logged in yet."
-        });
+        const authStatus = await getClaudeAuthStatusCheck();
+        checks.push(authStatus.check);
+      } else {
+        try {
+          const { stdout } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "codex --version"], { timeoutMs: 4000 });
+          checks.push({
+            command: "codex cli",
+            ok: true,
+            output: stdout.trim() || "Codex CLI is installed."
+          });
+        } catch (error) {
+          checks.push({
+            command: "codex cli",
+            ok: false,
+            output: error.stderr?.trim() || error.message
+          });
+          return { ok: false, checks };
+        }
+
+        try {
+          const { stdout, stderr } = await runDocker(["exec", CONTAINER_NAME, "sh", "-lc", "codex login status"], { timeoutMs: 4000 });
+          checks.push({
+            command: "codex login",
+            ok: true,
+            output: [stdout, stderr].filter(Boolean).join("\n").trim() || "Codex login is active in the container."
+          });
+        } catch (error) {
+          checks.push({
+            command: "codex login",
+            ok: false,
+            output: error.killed
+              ? "Codex login status timed out after 4s. The Codex CLI appears to be blocked inside the container."
+              : error.stderr?.trim() || error.message || "Codex is not logged in yet."
+          });
+        }
       }
 
       return {
@@ -851,7 +986,8 @@ export const getContainerStatus = defaultService.getContainerStatus.bind(default
 export const buildImage = defaultService.buildImage.bind(defaultService);
 export const runDockerNetworkCheck = defaultService.runDockerNetworkCheck.bind(defaultService);
 export const resetDockerBuilderCache = defaultService.resetDockerBuilderCache.bind(defaultService);
-export const getCodexContainerAuthStatus = defaultService.getCodexContainerAuthStatus.bind(defaultService);
+export const getAiContainerAuthStatus = defaultService.getAiContainerAuthStatus.bind(defaultService);
+export const getCodexContainerAuthStatus = defaultService.getAiContainerAuthStatus.bind(defaultService);
 export const stopContainer = defaultService.stopContainer.bind(defaultService);
 export const runContainer = defaultService.runContainer.bind(defaultService);
 export const getContainerLogs = defaultService.getContainerLogs.bind(defaultService);
