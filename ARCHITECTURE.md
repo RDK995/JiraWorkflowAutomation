@@ -213,7 +213,7 @@ The system uses a layered configuration model:
 Important consequence:
 
 - The setup API’s config model is the most accurate description of the supported local setup flow.
-- Some older examples still reflect legacy defaults such as `CODEX_EXEC_ARGS=--full-auto`, while the current setup UI prefers Docker-safe flags.
+- The setup UI and `.env.example` prefer Docker-safe CLI flags for containerized AI execution.
 
 ## State Boundaries
 

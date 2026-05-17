@@ -7,14 +7,17 @@
     "setup-api"
   ],
   "scripts": {
+    "check": "npm run test:auth-broker && npm run test:setup-api && npm run typecheck:frontend && npm run test:python",
     "dev:all": "./scripts/dev-start-all.sh",
     "dev:auth-broker": "npm run dev --workspace auth-broker",
     "dev:frontend": "npm run dev --workspace frontend",
     "dev:launcher-native-host": "cargo run --quiet --manifest-path launcher/src-tauri/Cargo.toml",
     "dev:setup-api": "npm run dev --workspace setup-api",
     "build:frontend": "npm run build --workspace frontend",
+    "typecheck:frontend": "npm run typecheck --workspace frontend",
     "test:auth-broker": "npm run test --workspace auth-broker",
     "test:setup-api": "npm run test --workspace setup-api",
+    "test:python": "AI_AGENT=codex PYTHONPATH=. pytest -q tests/test_app.py tests/test_jira_to_spec.py tests/test_workflow_output.py tests/test_workflow_script.py",
     "test:e2e": "playwright test",
     "test:e2e:live": "PRONTO_LIVE_E2E=1 playwright test -c playwright.live.config.ts"
   },

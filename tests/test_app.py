@@ -67,8 +67,8 @@ class AppLogicTests(unittest.TestCase):
         post_resp = Mock()
         post_resp.ok = True
 
-        with patch("src.app.requests.get", return_value=get_resp) as mock_get, patch(
-            "src.app.requests.post", return_value=post_resp
+        with patch("src.jira_client.requests.get", return_value=get_resp) as mock_get, patch(
+            "src.jira_client.requests.post", return_value=post_resp
         ) as mock_post:
             self.app_module.transition_issue_to_status("KAN-123", "In Review")
 
@@ -80,7 +80,7 @@ class AppLogicTests(unittest.TestCase):
         get_resp.ok = True
         get_resp.json.return_value = {"transitions": [{"id": "41", "to": {"name": "Done"}}]}
 
-        with patch("src.app.requests.get", return_value=get_resp):
+        with patch("src.jira_client.requests.get", return_value=get_resp):
             with self.assertRaises(RuntimeError):
                 self.app_module.transition_issue_to_status("KAN-123", "In Review")
 
@@ -90,7 +90,7 @@ class AppLogicTests(unittest.TestCase):
         response.status_code = 403
         response.text = "forbidden"
 
-        with patch("src.app.requests.post", return_value=response):
+        with patch("src.jira_client.requests.post", return_value=response):
             with self.assertRaises(RuntimeError):
                 self.app_module.add_issue_comment("KAN-123", "Hello")
 
@@ -133,7 +133,7 @@ class AppLogicTests(unittest.TestCase):
         process = Mock()
         process.stdout = io.StringIO("ok\n")
         process.wait.return_value = 0
-        with patch("src.app.subprocess.Popen", return_value=process) as mock_popen:
+        with patch("src.workflow_runner.subprocess.Popen", return_value=process) as mock_popen:
             with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
                 self.app_module.run_ai_workflow("KAN-123")
             call_kwargs = mock_popen.call_args
@@ -144,7 +144,7 @@ class AppLogicTests(unittest.TestCase):
         process = Mock()
         process.stdout = io.StringIO("Blocked on environment access.\nbwrap: No permissions to create a new namespace\n")
         process.wait.return_value = 1
-        with patch("src.app.subprocess.Popen", return_value=process):
+        with patch("src.workflow_runner.subprocess.Popen", return_value=process):
             with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
                 with self.assertRaises(RuntimeError) as ctx:
                     self.app_module.run_ai_workflow("KAN-123")
@@ -161,7 +161,7 @@ class AppLogicTests(unittest.TestCase):
         )
         process.wait.return_value = 0
 
-        with patch("src.app.subprocess.Popen", return_value=process):
+        with patch("src.workflow_runner.subprocess.Popen", return_value=process):
             with patch.object(self.app_module.app.logger, "info") as log_mock:
                 with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
                     output = self.app_module.run_ai_workflow("KAN-123")
@@ -185,7 +185,7 @@ class AppLogicTests(unittest.TestCase):
         )
         process.wait.return_value = 0
 
-        with patch("src.app.subprocess.Popen", return_value=process):
+        with patch("src.workflow_runner.subprocess.Popen", return_value=process):
             with patch.object(self.app_module.app.logger, "info") as log_mock:
                 with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"):
                     self.app_module.run_ai_workflow("KAN-123")
@@ -202,7 +202,7 @@ class AppLogicTests(unittest.TestCase):
         process.stdout = io.StringIO("")
         process.wait.side_effect = subprocess.TimeoutExpired(cmd="jira_ticket_to_pr.sh", timeout=10)
 
-        with patch("src.app.subprocess.Popen", return_value=process):
+        with patch("src.workflow_runner.subprocess.Popen", return_value=process):
             with patch.object(self.app_module, "WORKFLOW_SCRIPT", "./jira_ticket_to_pr.sh"), patch.object(
                 self.app_module, "WORKFLOW_TIMEOUT_SECONDS", 10
             ):

@@ -885,52 +885,8 @@ a:hover {
   max-width: 52rem;
 }
 
-.webhook-config-panel,
-.webhook-url-panel,
-.webhook-side-panel {
-  padding: 1rem;
-  border-radius: 16px;
-  border: 1px solid rgba(145, 170, 255, 0.16);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.webhook-config-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.85rem;
-  margin-top: 0.2rem;
-}
-
-.webhook-config-item {
-  display: grid;
-  gap: 0.35rem;
-  padding: 0.9rem 0.95rem;
-  border-radius: 14px;
-  border: 1px solid rgba(145, 170, 255, 0.14);
-  background: rgba(8, 14, 29, 0.42);
-}
-
-.webhook-config-item-wide {
-  grid-column: 1 / -1;
-}
-
-.webhook-config-label {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.webhook-config-item strong,
-.webhook-config-item code,
 .webhook-url-value code {
   color: var(--text-strong);
-}
-
-.webhook-config-item p {
-  margin: 0;
-  color: var(--text-body);
 }
 
 .webhook-url-card {
@@ -981,10 +937,6 @@ a:hover {
   background: rgba(6, 10, 24, 0.62);
   overflow-wrap: anywhere;
   word-break: break-word;
-}
-
-.webhook-test-panel {
-  margin-top: 0.15rem;
 }
 
 .webhook-side-list {
@@ -1358,16 +1310,6 @@ button:disabled {
 
 .brand-logo-inline {
   filter: drop-shadow(0 0 14px rgba(255, 255, 255, 0.22));
-}
-
-.run-console-illustration {
-  width: 100%;
-  height: auto;
-  display: block;
-  margin-bottom: 0.92rem;
-  border-radius: 16px;
-  border: 1px solid rgba(145, 170, 255, 0.22);
-  opacity: 0.86;
 }
 
 pre {

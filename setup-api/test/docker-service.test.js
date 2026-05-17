@@ -230,53 +230,28 @@ test("resetDockerBuilderCache prunes the builder cache", async () => {
   assert.equal(result.ok, true);
 });
 
-test("getCodexContainerAuthStatus verifies codex inside the running container", async () => {
-  const seen = [];
-  const service = createDockerService({
-    execFileImpl: createExecFileMock((file, args) => {
-      seen.push({ file, args });
-      if (file === "docker" && args[0] === "ps") {
-        return { stdout: "Up 3 minutes" };
-      }
-      if (file === "docker" && args[0] === "exec" && args[4] === "codex --version") {
-        return { stdout: "codex 1.2.3" };
-      }
-      if (file === "docker" && args[0] === "exec" && args[4] === "codex login status") {
-        return { stdout: "Logged in as demo@example.com" };
-      }
-      throw new Error("unexpected");
-    })
+for (const { agent, versionCommand, statusCommand, statusOutput } of [
+  { agent: "codex", versionCommand: "codex --version", statusCommand: "codex login status", statusOutput: "Logged in as demo@example.com" },
+  { agent: "claude", versionCommand: "claude --version", statusCommand: "claude auth status", statusOutput: "__PRONTO_CLAUDE_STATUS_COMMAND__:claude auth status\n__PRONTO_CLAUDE_STATUS_RC__:0\nLogged in as demo@example.com" }
+]) {
+  test(`getAiContainerAuthStatus verifies ${agent} inside the running container`, async () => {
+    const seen = [];
+    const service = createDockerService({
+      execFileImpl: createExecFileMock((file, args) => {
+        seen.push({ file, args });
+        if (file === "docker" && args[0] === "ps") return { stdout: "Up 3 minutes" };
+        if (file === "docker" && args[0] === "exec" && args[4] === versionCommand) return { stdout: `${agent} 1.2.3` };
+        if (file === "docker" && args[0] === "exec" && args[4].includes(statusCommand)) return { stdout: statusOutput };
+        throw new Error("unexpected");
+      })
+    });
+
+    const result = await service.getAiContainerAuthStatus({ AI_AGENT: agent });
+    assert.equal(result.ok, true);
+    assert.equal(result.checks[1].ok, true);
+    assert.equal(seen.filter((call) => call.args[0] === "exec").length, 2);
   });
-
-  const result = await service.getAiContainerAuthStatus({ AI_AGENT: "codex" });
-  assert.equal(result.ok, true);
-  assert.equal(result.checks[1].ok, true);
-  assert.equal(seen.filter((call) => call.args[0] === "exec").length, 2);
-});
-
-test("getAiContainerAuthStatus verifies claude inside the running container", async () => {
-  const seen = [];
-  const service = createDockerService({
-    execFileImpl: createExecFileMock((file, args) => {
-      seen.push({ file, args });
-      if (file === "docker" && args[0] === "ps") {
-        return { stdout: "Up 3 minutes" };
-      }
-      if (file === "docker" && args[0] === "exec" && args[4] === "claude --version") {
-        return { stdout: "claude 0.9.0" };
-      }
-      if (file === "docker" && args[0] === "exec" && args[4].includes("claude auth status")) {
-        return { stdout: "__PRONTO_CLAUDE_STATUS_COMMAND__:claude auth status\n__PRONTO_CLAUDE_STATUS_RC__:0\nLogged in as demo@example.com" };
-      }
-      throw new Error("unexpected");
-    })
-  });
-
-  const result = await service.getAiContainerAuthStatus({ AI_AGENT: "claude" });
-  assert.equal(result.ok, true);
-  assert.equal(result.checks[1].ok, true);
-  assert.equal(seen.filter((call) => call.args[0] === "exec").length, 2);
-});
+}
 
 test("startColima runs colima start", async () => {
   let seen;

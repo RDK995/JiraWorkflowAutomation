@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
 import { validateConfig } from "./config.js";
+import { HttpError, readJsonBody, sendJson, sendText, withCorsHeaders } from "./http/responses.js";
 import { frontendDistPath } from "./paths.js";
 import { buildImage, getAiContainerAuthStatus, getContainerLogs, listDockerContexts, openDockerDesktop, resetDockerBuilderCache, runContainer, runDockerNetworkCheck, startColima, stopContainer, switchDockerContext } from "./services/docker-service.js";
 import { readCurrentConfig, saveConfig } from "./services/env-file.js";
@@ -11,43 +12,28 @@ import { cancelAuthBrokerSession, getAuthBrokerHealth, getAuthBrokerSessionStatu
 import { getCodexReadinessStatus, getDockerReadinessStatus, getFullStatus, getGitHubReadinessStatus, getHealthStatus, getJiraReadinessStatus, getJiraWebhookDeliveryStatus, getNgrokReadinessStatus, getPrerequisiteChecks } from "./services/status-service.js";
 
 const PORT = Number(process.env.SETUP_API_PORT || 3010);
+const HOST = process.env.SETUP_API_HOST || "127.0.0.1";
 
-function withCorsHeaders(response) {
-  response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
+export function resolveStaticAssetPath(requestPath) {
+  const relativePath = requestPath === "/"
+    ? "index.html"
+    : decodeURIComponent(requestPath).replace(/^\/+/, "");
+  const resolvedPath = path.resolve(frontendDistPath, relativePath);
+  const frontendRoot = path.resolve(frontendDistPath);
 
-function sendJson(response, statusCode, payload) {
-  withCorsHeaders(response);
-  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(payload));
-}
-
-function sendText(response, statusCode, payload, type = "text/plain; charset=utf-8") {
-  withCorsHeaders(response);
-  response.writeHead(statusCode, { "Content-Type": type });
-  response.end(payload);
-}
-
-async function readJsonBody(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
+  if (resolvedPath !== frontendRoot && !resolvedPath.startsWith(`${frontendRoot}${path.sep}`)) {
+    return null;
   }
 
-  if (chunks.length === 0) {
-    return {};
-  }
-
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return resolvedPath;
 }
 
 async function serveStaticAsset(requestPath, response) {
   try {
-    const candidate = requestPath === "/"
-      ? path.join(frontendDistPath, "index.html")
-      : path.join(frontendDistPath, requestPath.replace(/^\//, ""));
+    const candidate = resolveStaticAssetPath(requestPath);
+    if (!candidate) {
+      return false;
+    }
     const content = await fs.readFile(candidate);
     const extension = path.extname(candidate);
     const types = {
@@ -309,7 +295,8 @@ export function createRequestListener(deps = {}) {
 
       sendJson(response, 404, { error: "Not found" });
     } catch (error) {
-      sendJson(response, 500, {
+      const statusCode = error instanceof HttpError ? error.statusCode : 500;
+      sendJson(response, statusCode, {
         error: error.message || "Unexpected server error"
       });
     }
@@ -322,8 +309,8 @@ export function createAppServer(deps = {}) {
 
 export function startServer(port = PORT, deps = {}) {
   const server = createAppServer(deps);
-  server.listen(port, () => {
-    console.log(`Setup API listening on http://localhost:${port}`);
+  server.listen(port, HOST, () => {
+    console.log(`Setup API listening on http://${HOST}:${port}`);
   });
   return server;
 }

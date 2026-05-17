@@ -1,8 +1,24 @@
+# Local configuration and secrets
 .env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+
+# Node
 node_modules/
-frontend/node_modules/
-setup-api/node_modules/
+*/node_modules/
+
+# Build outputs
 frontend/dist/
+launcher/dist/
+launcher/src-tauri/target/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+# Local service scratch data
 setup-api/.tmp/

@@ -171,6 +171,35 @@ ensure_branch_has_commits() {
   fi
 }
 
+create_or_update_pull_request() {
+  local pr_create_output=""
+  if ! pr_create_output="$(cd "${TARGET_DIR}" && gh pr create \
+    "$@" \
+    --title "${PR_TITLE}" \
+    --body-file "${PR_BODY_FILE}" \
+    --base "${BASE_BRANCH}" 2>&1)"; then
+    if [[ "${pr_create_output}" == *"already exists"* ]]; then
+      echo "A pull request already exists for ${BRANCH_NAME}. Updating it and reusing the existing PR."
+      (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
+        "$@" \
+        --title "${PR_TITLE}" \
+        --body-file "${PR_BODY_FILE}" >/dev/null 2>&1 || true)
+      local existing_pr_url=""
+      existing_pr_url="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" "$@" --json url --jq .url 2>/dev/null || true)"
+      if [[ -z "${existing_pr_url}" ]]; then
+        echo "${pr_create_output}" >&2
+        exit 1
+      fi
+      echo "${existing_pr_url}"
+    else
+      echo "${pr_create_output}" >&2
+      exit 1
+    fi
+  else
+    echo "${pr_create_output}"
+  fi
+}
+
 resolve_target_repo "${TARGET_REPO_INPUT}"
 
 if ! gh auth status -h github.com >/dev/null 2>&1; then
@@ -270,55 +299,10 @@ cat >> "${PR_BODY_FILE}" <<EOF
 EOF
 
 echo "Creating the pull request against ${BASE_BRANCH}."
-PR_CREATE_OUTPUT=""
 if [[ -n "${TARGET_REPO_SLUG}" ]]; then
-  if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
-    --repo "${TARGET_REPO_SLUG}" \
-    --title "${PR_TITLE}" \
-    --body-file "${PR_BODY_FILE}" \
-    --base "${BASE_BRANCH}" 2>&1)"; then
-    if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
-      echo "A pull request already exists for ${BRANCH_NAME}. Updating it and reusing the existing PR."
-      (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
-        --repo "${TARGET_REPO_SLUG}" \
-        --title "${PR_TITLE}" \
-        --body-file "${PR_BODY_FILE}" >/dev/null 2>&1 || true)
-      EXISTING_PR_URL="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" --repo "${TARGET_REPO_SLUG}" --json url --jq .url 2>/dev/null || true)"
-      if [[ -z "${EXISTING_PR_URL}" ]]; then
-        echo "${PR_CREATE_OUTPUT}" >&2
-        exit 1
-      fi
-      echo "${EXISTING_PR_URL}"
-    else
-      echo "${PR_CREATE_OUTPUT}" >&2
-      exit 1
-    fi
-  else
-    echo "${PR_CREATE_OUTPUT}"
-  fi
+  create_or_update_pull_request --repo "${TARGET_REPO_SLUG}"
 else
-  if ! PR_CREATE_OUTPUT="$(cd "${TARGET_DIR}" && gh pr create \
-    --title "${PR_TITLE}" \
-    --body-file "${PR_BODY_FILE}" \
-    --base "${BASE_BRANCH}" 2>&1)"; then
-    if [[ "${PR_CREATE_OUTPUT}" == *"already exists"* ]]; then
-      echo "A pull request already exists for ${BRANCH_NAME}. Updating it and reusing the existing PR."
-      (cd "${TARGET_DIR}" && gh pr edit "${BRANCH_NAME}" \
-        --title "${PR_TITLE}" \
-        --body-file "${PR_BODY_FILE}" >/dev/null 2>&1 || true)
-      EXISTING_PR_URL="$(cd "${TARGET_DIR}" && gh pr view "${BRANCH_NAME}" --json url --jq .url 2>/dev/null || true)"
-      if [[ -z "${EXISTING_PR_URL}" ]]; then
-        echo "${PR_CREATE_OUTPUT}" >&2
-        exit 1
-      fi
-      echo "${EXISTING_PR_URL}"
-    else
-      echo "${PR_CREATE_OUTPUT}" >&2
-      exit 1
-    fi
-  else
-    echo "${PR_CREATE_OUTPUT}"
-  fi
+  create_or_update_pull_request
 fi
 
 echo "Pull request creation step finished."
