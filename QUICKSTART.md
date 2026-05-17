@@ -127,7 +127,7 @@ Build the frontend first:
 
 ```bash
 npm run build:frontend
-npm run dev:launcher
+npm run dev:launcher-native-host
 ```
 
 The launcher expects `frontend/dist` to exist and opens the setup flow at `http://127.0.0.1:3010`.

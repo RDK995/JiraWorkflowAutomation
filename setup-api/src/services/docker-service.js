@@ -987,7 +987,6 @@ export const buildImage = defaultService.buildImage.bind(defaultService);
 export const runDockerNetworkCheck = defaultService.runDockerNetworkCheck.bind(defaultService);
 export const resetDockerBuilderCache = defaultService.resetDockerBuilderCache.bind(defaultService);
 export const getAiContainerAuthStatus = defaultService.getAiContainerAuthStatus.bind(defaultService);
-export const getCodexContainerAuthStatus = defaultService.getAiContainerAuthStatus.bind(defaultService);
 export const stopContainer = defaultService.stopContainer.bind(defaultService);
 export const runContainer = defaultService.runContainer.bind(defaultService);
 export const getContainerLogs = defaultService.getContainerLogs.bind(defaultService);

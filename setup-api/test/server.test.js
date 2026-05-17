@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 
-import { createRequestListener } from "../src/server.js";
+import { createRequestListener, resolveStaticAssetPath } from "../src/server.js";
 
 async function invokeRoute({ method = "GET", url = "/", body, headers = {}, deps = {} }) {
   const listener = createRequestListener({
@@ -14,7 +14,7 @@ async function invokeRoute({ method = "GET", url = "/", body, headers = {}, deps
   const request = Readable.from(body ? [Buffer.from(body)] : []);
   request.method = method;
   request.url = url;
-  request.headers = headers;
+  request.headers = { host: "localhost", ...headers };
 
   const response = {
     statusCode: 200,
@@ -45,6 +45,44 @@ async function invokeRoute({ method = "GET", url = "/", body, headers = {}, deps
   };
 }
 
+const jsonHeaders = { "content-type": "application/json" };
+
+async function expectConfigForward({ url, depName, config }) {
+  let seenConfig;
+  const response = await invokeRoute({
+    method: "POST",
+    url,
+    headers: jsonHeaders,
+    body: JSON.stringify({ config }),
+    deps: {
+      [depName]: async (value) => {
+        seenConfig = value;
+        return { ok: true, checks: [] };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(seenConfig, config);
+}
+
+async function expectRouteCalls({ method = "POST", url, depName, responsePayload = { ok: true, output: "ok" } }) {
+  let called = false;
+  const response = await invokeRoute({
+    method,
+    url,
+    deps: {
+      [depName]: async () => {
+        called = true;
+        return responsePayload;
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(called, true);
+}
+
 test("GET /api/status returns mocked status payload", async () => {
   const response = await invokeRoute({
     url: "/api/status",
@@ -61,7 +99,7 @@ test("POST /api/config/validate validates provided config", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/config/validate",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({ config: {} })
   });
 
@@ -71,107 +109,62 @@ test("POST /api/config/validate validates provided config", async () => {
   assert.ok(payload.errors.JIRA_BASE_URL);
 });
 
-test("POST /api/checks/jira-readiness forwards form config to service", async () => {
-  let seenConfig;
-  const config = { JIRA_BASE_URL: "https://example.atlassian.net" };
+test("POST routes return 400 for malformed JSON bodies", async () => {
   const response = await invokeRoute({
     method: "POST",
-    url: "/api/checks/jira-readiness",
-    headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-    deps: {
-      getJiraReadinessStatusImpl: async (value) => {
-        seenConfig = value;
-        return { ok: true, checks: [] };
-      }
-    }
+    url: "/api/config/validate",
+    headers: jsonHeaders,
+    body: "{"
   });
 
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(seenConfig, config);
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error, "Request body must be valid JSON.");
+});
+
+test("resolveStaticAssetPath blocks path traversal outside the frontend build", () => {
+  assert.equal(resolveStaticAssetPath("/../package.json"), null);
+  assert.equal(resolveStaticAssetPath("/..%2Fpackage.json"), null);
+  assert.match(resolveStaticAssetPath("/") || "", /frontend\/dist\/index\.html$/);
+});
+
+test("POST /api/checks/jira-readiness forwards form config to service", async () => {
+  await expectConfigForward({
+    url: "/api/checks/jira-readiness",
+    depName: "getJiraReadinessStatusImpl",
+    config: { JIRA_BASE_URL: "https://example.atlassian.net" }
+  });
 });
 
 test("POST /api/checks/jira-webhook-delivery forwards form config to service", async () => {
-  let seenConfig;
-  const config = { JIRA_WEBHOOK_SECRET: "secret" };
-  const response = await invokeRoute({
-    method: "POST",
+  await expectConfigForward({
     url: "/api/checks/jira-webhook-delivery",
-    headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-    deps: {
-      getJiraWebhookDeliveryStatusImpl: async (value) => {
-        seenConfig = value;
-        return { ok: true, checks: [] };
-      }
-    }
+    depName: "getJiraWebhookDeliveryStatusImpl",
+    config: { JIRA_WEBHOOK_SECRET: "secret" }
   });
-
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(seenConfig, config);
 });
 
 test("POST /api/checks/github-readiness forwards form config to service", async () => {
-  let seenConfig;
-  const config = { GITHUB_TOKEN: "ghp_token" };
-  const response = await invokeRoute({
-    method: "POST",
+  await expectConfigForward({
     url: "/api/checks/github-readiness",
-    headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-    deps: {
-      getGitHubReadinessStatusImpl: async (value) => {
-        seenConfig = value;
-        return { ok: true, checks: [] };
-      }
-    }
+    depName: "getGitHubReadinessStatusImpl",
+    config: { GITHUB_TOKEN: "ghp_token" }
   });
-
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(seenConfig, config);
 });
 
 test("POST /api/checks/codex-readiness forwards form config to service", async () => {
-  let seenConfig;
-  const config = { OPENAI_API_KEY: "sk-test" };
-  const response = await invokeRoute({
-    method: "POST",
+  await expectConfigForward({
     url: "/api/checks/codex-readiness",
-    headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-    deps: {
-      getCodexReadinessStatusImpl: async (value) => {
-        seenConfig = value;
-        return { ok: true, checks: [] };
-      }
-    }
+    depName: "getCodexReadinessStatusImpl",
+    config: { OPENAI_API_KEY: "sk-test" }
   });
-
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(seenConfig, config);
 });
 
 test("POST /api/checks/codex-container-auth calls the docker service", async () => {
-  let called = false;
-  let seenConfig;
-  const config = { AI_AGENT: "claude" };
-  const response = await invokeRoute({
-    method: "POST",
+  await expectConfigForward({
     url: "/api/checks/codex-container-auth",
-    headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-    deps: {
-      getAiContainerAuthStatusImpl: async (value) => {
-        called = true;
-        seenConfig = value;
-        return { ok: true, checks: [] };
-      }
-    }
+    depName: "getAiContainerAuthStatusImpl",
+    config: { AI_AGENT: "claude" }
   });
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(called, true);
-  assert.deepEqual(seenConfig, config);
 });
 
 test("GET /api/auth/health proxies auth broker health", async () => {
@@ -202,7 +195,7 @@ test("POST /api/auth/preflight forwards provider and context", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/auth/preflight",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({ provider: "claude", context: { AI_AGENT: "claude" } }),
     deps: {
       runAuthBrokerPreflightImpl: async (provider, context) => {
@@ -224,7 +217,7 @@ test("POST /api/auth/sessions/start forwards provider and context", async () => 
   const response = await invokeRoute({
     method: "POST",
     url: "/api/auth/sessions/start",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({ provider: "codex", context: { AI_AGENT: "codex" } }),
     deps: {
       startAuthBrokerSessionImpl: async (provider, context) => {
@@ -245,7 +238,6 @@ test("GET /api/auth/sessions/:id forwards session status lookup", async () => {
   const response = await invokeRoute({
     method: "GET",
     url: "/api/auth/sessions/session-1",
-    headers: { host: "localhost" },
     deps: {
       getAuthBrokerSessionStatusImpl: async (sessionId) => {
         seenSessionId = sessionId;
@@ -264,7 +256,7 @@ test("POST /api/auth/sessions/:id/code forwards auth code submission", async () 
   const response = await invokeRoute({
     method: "POST",
     url: "/api/auth/sessions/session-1/code",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({ code: "ABCD-1234" }),
     deps: {
       submitAuthBrokerCodeImpl: async (sessionId, code) => {
@@ -280,12 +272,31 @@ test("POST /api/auth/sessions/:id/code forwards auth code submission", async () 
   assert.equal(seenCode, "ABCD-1234");
 });
 
+test("POST /api/auth/sessions/:id/login forwards manual login requests", async () => {
+  let seenSessionId;
+  const response = await invokeRoute({
+    method: "POST",
+    url: "/api/auth/sessions/session-1/login",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+    deps: {
+      runAuthBrokerLoginImpl: async (sessionId) => {
+        seenSessionId = sessionId;
+        return { ok: true, session: { id: sessionId, provider: "claude", state: "waiting_for_browser" } };
+      }
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(seenSessionId, "session-1");
+});
+
 test("POST /api/auth/sessions/:id/verify forwards verify call", async () => {
   let seenSessionId;
   const response = await invokeRoute({
     method: "POST",
     url: "/api/auth/sessions/session-1/verify",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({}),
     deps: {
       verifyAuthBrokerSessionImpl: async (sessionId) => {
@@ -304,7 +315,7 @@ test("POST /api/auth/sessions/:id/cancel forwards cancel call", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/auth/sessions/session-1/cancel",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({}),
     deps: {
       cancelAuthBrokerSessionImpl: async (sessionId) => {
@@ -322,7 +333,7 @@ test("legacy Claude device auth compatibility routes are removed", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/checks/claude-device-login/start",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({})
   });
 
@@ -330,48 +341,21 @@ test("legacy Claude device auth compatibility routes are removed", async () => {
 });
 
 test("POST /api/checks/ngrok-readiness forwards form config to service", async () => {
-  let seenConfig;
-  const config = { NGROK_ENABLE: "true", NGROK_AUTHTOKEN: "token" };
-  const response = await invokeRoute({
-    method: "POST",
+  await expectConfigForward({
     url: "/api/checks/ngrok-readiness",
-    headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ config }),
-    deps: {
-      getNgrokReadinessStatusImpl: async (value) => {
-        seenConfig = value;
-        return { ok: true, checks: [] };
-      }
-    }
+    depName: "getNgrokReadinessStatusImpl",
+    config: { NGROK_ENABLE: "true", NGROK_AUTHTOKEN: "token" }
   });
-
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(seenConfig, config);
 });
 
 test("POST /api/docker/start-colima calls the docker service", async () => {
-  let called = false;
-  const response = await invokeRoute({
-    method: "POST",
-    url: "/api/docker/start-colima",
-    headers: { host: "localhost" },
-    deps: {
-      startColimaImpl: async () => {
-        called = true;
-        return { ok: true, output: "started" };
-      }
-    }
-  });
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(called, true);
+  await expectRouteCalls({ url: "/api/docker/start-colima", depName: "startColimaImpl" });
 });
 
 test("POST /api/docker/build returns structured failure payloads", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/docker/build",
-    headers: { host: "localhost" },
     deps: {
       buildImageImpl: async () => ({
         ok: false,
@@ -390,46 +374,17 @@ test("POST /api/docker/build returns structured failure payloads", async () => {
 });
 
 test("POST /api/docker/network-check calls the docker service", async () => {
-  let called = false;
-  const response = await invokeRoute({
-    method: "POST",
-    url: "/api/docker/network-check",
-    headers: { host: "localhost" },
-    deps: {
-      runDockerNetworkCheckImpl: async () => {
-        called = true;
-        return { ok: true, checks: [] };
-      }
-    }
-  });
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(called, true);
+  await expectRouteCalls({ url: "/api/docker/network-check", depName: "runDockerNetworkCheckImpl", responsePayload: { ok: true, checks: [] } });
 });
 
 test("POST /api/docker/reset-builder-cache calls the docker service", async () => {
-  let called = false;
-  const response = await invokeRoute({
-    method: "POST",
-    url: "/api/docker/reset-builder-cache",
-    headers: { host: "localhost" },
-    deps: {
-      resetDockerBuilderCacheImpl: async () => {
-        called = true;
-        return { ok: true, output: "cleared" };
-      }
-    }
-  });
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(called, true);
+  await expectRouteCalls({ url: "/api/docker/reset-builder-cache", depName: "resetDockerBuilderCacheImpl" });
 });
 
 test("POST /api/docker/start-colima returns structured failure payloads", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/docker/start-colima",
-    headers: { host: "localhost" },
     deps: {
       startColimaImpl: async () => ({
         ok: false,
@@ -448,28 +403,13 @@ test("POST /api/docker/start-colima returns structured failure payloads", async 
 });
 
 test("POST /api/docker/open-docker-desktop calls the docker service", async () => {
-  let called = false;
-  const response = await invokeRoute({
-    method: "POST",
-    url: "/api/docker/open-docker-desktop",
-    headers: { host: "localhost" },
-    deps: {
-      openDockerDesktopImpl: async () => {
-        called = true;
-        return { ok: true, output: "opened" };
-      }
-    }
-  });
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(called, true);
+  await expectRouteCalls({ url: "/api/docker/open-docker-desktop", depName: "openDockerDesktopImpl" });
 });
 
 test("POST /api/docker/open-docker-desktop returns structured failure payloads", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/docker/open-docker-desktop",
-    headers: { host: "localhost" },
     deps: {
       openDockerDesktopImpl: async () => ({
         ok: false,
@@ -488,20 +428,7 @@ test("POST /api/docker/open-docker-desktop returns structured failure payloads",
 });
 
 test("GET /api/docker/contexts calls the docker service", async () => {
-  let called = false;
-  const response = await invokeRoute({
-    url: "/api/docker/contexts",
-    headers: { host: "localhost" },
-    deps: {
-      listDockerContextsImpl: async () => {
-        called = true;
-        return { ok: true, contexts: [] };
-      }
-    }
-  });
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(called, true);
+  await expectRouteCalls({ method: "GET", url: "/api/docker/contexts", depName: "listDockerContextsImpl", responsePayload: { ok: true, contexts: [] } });
 });
 
 test("POST /api/docker/context/use calls the docker service", async () => {
@@ -509,7 +436,7 @@ test("POST /api/docker/context/use calls the docker service", async () => {
   const response = await invokeRoute({
     method: "POST",
     url: "/api/docker/context/use",
-    headers: { host: "localhost", "content-type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({ name: "default" }),
     deps: {
       switchDockerContextImpl: async (name) => {
@@ -528,7 +455,6 @@ test("POST /api/docker/run stops existing container before starting", async () =
   const response = await invokeRoute({
     method: "POST",
     url: "/api/docker/run",
-    headers: { host: "localhost" },
     deps: {
       stopContainerImpl: async () => {
         order.push("stop");
@@ -547,8 +473,7 @@ test("POST /api/docker/run stops existing container before starting", async () =
 
 test("GET unknown route falls back to 404 when no static asset exists", async () => {
   const response = await invokeRoute({
-    url: "/missing",
-    headers: { host: "localhost" }
+    url: "/missing"
   });
 
   assert.equal(response.statusCode, 404);
@@ -557,7 +482,6 @@ test("GET unknown route falls back to 404 when no static asset exists", async ()
 test("GET unknown api route returns JSON 404 before SPA fallback", async () => {
   const response = await invokeRoute({
     url: "/api/typo",
-    headers: { host: "localhost" },
     deps: {
       serveStaticAssetImpl: async (requestPath) => requestPath === "/"
     }

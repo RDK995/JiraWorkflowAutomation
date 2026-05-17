@@ -1,5 +1,11 @@
 import type { Config } from "./config";
 
+export type CommandCheck = {
+  command: string;
+  ok: boolean;
+  output: string;
+};
+
 export type ValidationResponse = {
   config: Config;
   errors: Record<string, string>;
@@ -42,11 +48,7 @@ export type PrereqResponse = {
 
 export type ReadinessCheckResponse = {
   ok: boolean;
-  checks: Array<{
-    command: string;
-    ok: boolean;
-    output: string;
-  }>;
+  checks: CommandCheck[];
   diagnosis?: {
     code: string;
     title: string;
@@ -73,23 +75,6 @@ export type DockerRecoveryResponse = {
 };
 
 export type DockerNetworkCheckResponse = ReadinessCheckResponse;
-
-export type DeviceLoginPromptResponse = {
-  ok: boolean;
-  checks: Array<{
-    command: string;
-    ok: boolean;
-    output: string;
-  }>;
-  session: {
-    active: boolean;
-    state: string;
-    url: string;
-    code: string;
-    expiryText: string;
-    output: string;
-  };
-};
 
 export type AuthProvider = "claude" | "codex";
 

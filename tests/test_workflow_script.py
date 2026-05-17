@@ -16,3 +16,12 @@ def test_generated_jira_brief_is_excluded_from_empty_pr_guard():
     assert 'git -C "${TARGET_DIR}" add -A -- . ":(exclude)${SPEC_FILE}"' in script
     assert 'git -C "${TARGET_DIR}" reset -q -- "${SPEC_FILE}"' in script
     assert 'git -C "${TARGET_DIR}" diff --quiet "origin/${BASE_BRANCH}...HEAD" -- . ":(exclude)${SPEC_FILE}"' in script
+
+
+def test_pull_request_creation_uses_single_create_or_update_function():
+    script = Path("jira_ticket_to_pr.sh").read_text()
+
+    assert "create_or_update_pull_request() {" in script
+    assert 'create_or_update_pull_request --repo "${TARGET_REPO_SLUG}"' in script
+    assert "\n  create_or_update_pull_request\n" in script
+    assert script.count("gh pr create") == 1

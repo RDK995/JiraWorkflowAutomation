@@ -8,6 +8,7 @@ const CONTAINER_NAME = "jira-automation";
 const CLAUDE_STATE_DIR = "/data/claude";
 const CODEX_STATE_DIR = "/data/codex";
 const CLAUDE_AUTH_STATUS_COMMAND = "status_command='claude auth status'; if claude auth status >/tmp/pronto-claude-auth 2>&1; then status_rc=0; elif claude login status >/tmp/pronto-claude-auth 2>&1; then status_command='claude login status'; status_rc=0; elif claude whoami >/tmp/pronto-claude-auth 2>&1; then status_command='claude whoami'; status_rc=0; else status_rc=$?; fi; printf '__PRONTO_CLAUDE_STATUS_COMMAND__:%s\\n' \"$status_command\"; printf '__PRONTO_CLAUDE_STATUS_RC__:%s\\n' \"$status_rc\"; cat /tmp/pronto-claude-auth; exit 0";
+const TERMINAL_SESSION_STATES = new Set(["authenticated", "failed", "cancelled"]);
 
 function authError(code, message, remediation, severity = "fail") {
   return { code, message, remediation, severity };
@@ -394,6 +395,33 @@ export function createAuthBrokerService({
     return adapters.claude.submitCode(session, codeInput);
   }
 
+  async function runAuthSessionLogin(sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        session: null,
+        error: authError("session_not_found", "Auth session not found.", "Start a new auth session from the wizard.")
+      };
+    }
+
+    if (session.provider !== "claude") {
+      return createSessionResponse(failSession(session, "provider_login_command_unsupported", "Manual /login is only supported for Claude in this flow.", "Use the provider-specific browser flow and retry."));
+    }
+
+    if (TERMINAL_SESSION_STATES.has(session.state)) {
+      return createSessionResponse(session);
+    }
+
+    if (!session.process || typeof session.process.write !== "function") {
+      return createSessionResponse(failSession(session, "interactive_session_missing", "Interactive Claude session is not active.", "Restart Claude Code login from the wizard."));
+    }
+
+    session.process.write("/login\r");
+    updateSession(session, { state: "waiting_for_browser" });
+    return createSessionResponse(session);
+  }
+
   async function verifyAuthSession(sessionId) {
     const session = sessions.get(sessionId);
     if (!session) {
@@ -452,6 +480,7 @@ export function createAuthBrokerService({
     startAuthSession,
     getAuthSessionStatus,
     submitAuthCode,
+    runAuthSessionLogin,
     verifyAuthSession,
     cancelAuthSession
   };

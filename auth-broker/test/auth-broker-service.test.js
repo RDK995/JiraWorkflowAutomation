@@ -91,3 +91,49 @@ test("startAuthSession returns Codex waiting_for_browser state from interactive 
   assert.equal(result.session.browserUrl, "https://auth.openai.com/codex/device");
   assert.equal(result.session.code, "ABCD-12345");
 });
+
+test("runAuthSessionLogin writes /login to active Claude interactive session", async () => {
+  const writes = [];
+  const service = createAuthBrokerService({
+    nodeVersion: "22.13.0",
+    ptyImpl: {
+      spawn() {
+        return {
+          onData() {},
+          onExit() {},
+          write(data) {
+            writes.push(data);
+          },
+          kill() {}
+        };
+      }
+    },
+    execFileImpl: createExecFileMock((file, args) => {
+      if (file === "which" && args[0] === "docker") {
+        return { stdout: "/usr/local/bin/docker" };
+      }
+      if (file === "/usr/local/bin/docker" && args[0] === "version") {
+        return { stdout: "Docker version" };
+      }
+      if (file === "/usr/local/bin/docker" && args[0] === "ps" && args[1] === "-a") {
+        return { stdout: "Up 2 minutes" };
+      }
+      if (file === "/usr/local/bin/docker" && args[0] === "exec" && args[4] === "claude --version") {
+        return { stdout: "2.1.114 (Claude Code)" };
+      }
+      if (file === "/usr/local/bin/docker" && args[0] === "exec" && args[4]?.includes("claude auth status")) {
+        const error = new Error("not logged in");
+        error.stderr = "Not logged in · Please run /login";
+        throw error;
+      }
+      return { stdout: "writable" };
+    })
+  });
+
+  const started = await service.startAuthSession("claude");
+  const result = await service.runAuthSessionLogin(started.session.id);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.session.state, "waiting_for_browser");
+  assert.deepEqual(writes, ["/login\r"]);
+});

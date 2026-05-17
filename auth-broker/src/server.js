@@ -1,33 +1,10 @@
 import { createServer } from "node:http";
 
+import { HttpError, readJsonBody, sendJson, withCorsHeaders } from "./http/responses.js";
 import { createAuthBrokerService } from "./services/auth-broker-service.js";
 
 const PORT = Number(process.env.AUTH_BROKER_PORT || 3020);
-
-function withCorsHeaders(response) {
-  response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-function sendJson(response, statusCode, payload) {
-  withCorsHeaders(response);
-  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(payload));
-}
-
-async function readJsonBody(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-
-  if (chunks.length === 0) {
-    return {};
-  }
-
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
+const HOST = process.env.AUTH_BROKER_HOST || "127.0.0.1";
 
 export function createRequestListener(service = createAuthBrokerService()) {
   return async (request, response) => {
@@ -83,6 +60,12 @@ export function createRequestListener(service = createAuthBrokerService()) {
         return;
       }
 
+      const loginMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/login$/);
+      if (request.method === "POST" && loginMatch) {
+        sendJson(response, 200, await service.runAuthSessionLogin(loginMatch[1]));
+        return;
+      }
+
       const verifyMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/verify$/);
       if (request.method === "POST" && verifyMatch) {
         sendJson(response, 200, await service.verifyAuthSession(verifyMatch[1]));
@@ -97,7 +80,8 @@ export function createRequestListener(service = createAuthBrokerService()) {
 
       sendJson(response, 404, { ok: false, error: "Not found" });
     } catch (error) {
-      sendJson(response, 500, {
+      const statusCode = error instanceof HttpError ? error.statusCode : 500;
+      sendJson(response, statusCode, {
         ok: false,
         error: error instanceof Error ? error.message : "Unexpected auth broker error"
       });
@@ -107,8 +91,8 @@ export function createRequestListener(service = createAuthBrokerService()) {
 
 export function startServer(port = PORT) {
   const server = createServer(createRequestListener());
-  server.listen(port, () => {
-    console.log(`Auth broker listening on http://localhost:${port}`);
+  server.listen(port, HOST, () => {
+    console.log(`Auth broker listening on http://${HOST}:${port}`);
   });
   return server;
 }

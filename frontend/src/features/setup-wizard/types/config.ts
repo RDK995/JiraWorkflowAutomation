@@ -1,4 +1,34 @@
-export type Config = Record<string, string>;
+export const CONFIG_FIELDS = [
+  "PORT",
+  "JIRA_BASE_URL",
+  "JIRA_USER_EMAIL",
+  "JIRA_API_TOKEN",
+  "JIRA_WEBHOOK_SECRET",
+  "READY_STATUS",
+  "IN_PROGRESS_STATUS",
+  "IN_REVIEW_STATUS",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "REQUIRE_GITHUB_AUTH",
+  "AI_AGENT",
+  "CODEX_API_KEY",
+  "OPENAI_API_KEY",
+  "CODEX_BOOTSTRAP_LOGIN",
+  "CODEX_DEVICE_LOGIN_ON_START",
+  "CLAUDE_BOOTSTRAP_LOGIN",
+  "CLAUDE_DEVICE_LOGIN_ON_START",
+  "WORKFLOW_BASE_BRANCH",
+  "CODEX_EXEC_ARGS",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_EXEC_ARGS",
+  "NGROK_ENABLE",
+  "NGROK_AUTHTOKEN",
+  "NGROK_API_KEY",
+  "NGROK_DOMAIN"
+] as const;
+
+export type ConfigField = (typeof CONFIG_FIELDS)[number];
+export type Config = Record<ConfigField, string>;
 
 export const DEFAULT_CONFIG: Config = {
   PORT: "3000",
@@ -27,4 +57,4 @@ export const DEFAULT_CONFIG: Config = {
   NGROK_AUTHTOKEN: "",
   NGROK_API_KEY: "",
   NGROK_DOMAIN: ""
-};
+} satisfies Config;

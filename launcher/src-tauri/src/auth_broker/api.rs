@@ -778,6 +778,44 @@ fn verify_session(manager: &SessionManager, session_id: &str) -> serde_json::Val
     manager.session_payload(session_id)
 }
 
+fn refresh_session_status(manager: &SessionManager, session_id: &str) -> serde_json::Value {
+    let session = match manager.get_session(session_id) {
+        Some(session) => session,
+        None => return manager.session_payload(session_id),
+    };
+
+    if matches!(
+        session.state,
+        SessionState::Authenticated | SessionState::Failed | SessionState::Cancelled
+    ) {
+        return manager.session_payload(session_id);
+    }
+
+    let should_probe_provider = matches!(
+        session.state,
+        SessionState::Starting
+            | SessionState::WaitingForBrowser
+            | SessionState::WaitingForCode
+            | SessionState::Verifying
+            | SessionState::Persisting
+    );
+
+    if should_probe_provider {
+        let (ok, output) = provider_auth_status(session.provider);
+        if ok {
+            log_auth_event(
+                session_id,
+                Some(session.provider),
+                "status_authenticated",
+                "provider auth status succeeded during poll",
+            );
+            mark_session_authenticated(manager, session_id, session.provider, output);
+        }
+    }
+
+    manager.session_payload(session_id)
+}
+
 fn run_session_login(manager: &SessionManager, session_id: &str) -> serde_json::Value {
     if let Some(session) = manager.get_session(session_id) {
         if session.provider != Provider::Claude {
@@ -884,7 +922,10 @@ pub fn handle_request(mut request: Request, manager: &SessionManager) {
             ));
         }
         RouteMatch::SessionStatus(session_id) => {
-            let _ = request.respond(json_response(200, manager.session_payload(&session_id)));
+            let _ = request.respond(json_response(
+                200,
+                refresh_session_status(manager, &session_id),
+            ));
         }
         RouteMatch::SessionCode(session_id) => {
             let body = read_body(&mut request);
